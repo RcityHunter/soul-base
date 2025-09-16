@@ -1,8 +1,8 @@
 [package]
 name = "soulbase-types"
 version = "1.0.0"
-edition = "2025"
-rust-version = "1.78"
+edition = "2024"
+rust-version = "1.85.0"
 license = "Apache-2.0"
 description = "Data contract primitives for the Soul platform (IDs, Subject, Scope, Consent, Envelope...)."
 repository = "https://github.com/RcityHunter/soul-base"
