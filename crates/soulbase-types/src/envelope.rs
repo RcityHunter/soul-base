@@ -61,4 +61,14 @@ impl<T> Envelope<T> {
         self.causation_id = Some(causation);
         self
     }
+
+    pub fn with_consent(mut self, consent: Consent) -> Self {
+        self.consent = Some(consent);
+        self
+    }
+
+    pub fn with_trace(mut self, trace: TraceContext) -> Self {
+        self.trace = Some(trace);
+        self
+    }
 }

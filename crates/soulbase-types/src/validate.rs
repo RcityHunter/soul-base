@@ -9,6 +9,8 @@ pub enum ValidateError {
     EmptyField(&'static str),
     #[error("invalid_semver:{0}")]
     InvalidSemVer(String),
+    #[error("tenant_mismatch")]
+    TenantMismatch,
 }
 
 pub trait Validate {
@@ -39,6 +41,9 @@ impl<T> Validate for Envelope<T> {
             return Err(ValidateError::InvalidSemVer(self.schema_ver.clone()));
         }
         self.actor.validate()?;
+        if !self.partition_key.contains(&self.actor.tenant.0) {
+            return Err(ValidateError::TenantMismatch);
+        }
         Ok(())
     }
 }
