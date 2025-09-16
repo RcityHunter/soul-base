@@ -1,0 +1,31 @@
+[package]
+name = "soulbase-errors"
+version = "1.0.0"
+edition = "2021"
+rust-version = "1.78"
+license = "Apache-2.0"
+description = "Unified error domain & stable error codes for the Soul platform."
+repository = "https://github.com/RcityHunter/soul-base"
+homepage = "https://github.com/RcityHunter/soul-base"
+documentation = "https://github.com/RcityHunter/soul-base/tree/main/crates/soulbase-errors"
+
+[features]
+http = ["dep:http"]
+grpc = ["dep:tonic"]
+wrap-reqwest = ["dep:reqwest"]
+wrap-sqlx = ["dep:sqlx"]
+wrap-llm = []
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+once_cell = "1"
+http = { version = "1", optional = true }
+tonic = { version = "0.12", optional = true }
+reqwest = { version = "0.12", optional = true, default-features = false, features = ["rustls-tls"] }
+sqlx = { version = "0.7", optional = true, default-features = false, features = ["runtime-tokio", "macros"] }
+soulbase-types = { path = "../soulbase-types", version = "1.0.0" }
+
+[dev-dependencies]
+serde_json = "1"

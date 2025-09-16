@@ -1,5 +1,8 @@
 [workspace]
-members = ["crates/soulbase-types"]
+members = [
+    "crates/soulbase-types",
+    "crates/soulbase-errors",
+]
 resolver = "2"
 
 [workspace.package]
