@@ -1,0 +1,33 @@
+[package]
+name = "soulbase-auth"
+version = "1.0.0"
+edition = "2021"
+rust-version = "1.78"
+license = "Apache-2.0"
+description = "AuthN · AuthZ · Quota SPI for the Soul platform"
+repository = "https://github.com/RcityHunter/soul-base"
+homepage = "https://github.com/RcityHunter/soul-base"
+documentation = "https://github.com/RcityHunter/soul-base/tree/main/crates/soulbase-auth"
+
+[features]
+default = ["authn-oidc", "pdp-local", "quota-memory", "cache-memory"]
+authn-oidc = []
+pdp-local = []
+quota-memory = []
+cache-memory = []
+
+[dependencies]
+async-trait = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+parking_lot = "0.12"
+ahash = "0.8"
+base64 = "0.22"
+
+soulbase-types = { path = "../soulbase-types", version = "1.0.0" }
+soulbase-errors = { path = "../soulbase-errors", version = "1.0.0" }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+serde_json = "1"

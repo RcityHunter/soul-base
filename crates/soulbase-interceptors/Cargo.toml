@@ -1,0 +1,35 @@
+[package]
+name = "soulbase-interceptors"
+version = "1.0.0"
+edition = "2021"
+rust-version = "1.78"
+license = "Apache-2.0"
+description = "Unified interceptor chain / middleware for the Soul platform"
+repository = "https://github.com/RcityHunter/soul-base"
+homepage = "https://github.com/RcityHunter/soul-base"
+documentation = "https://github.com/RcityHunter/soul-base/tree/main/crates/soulbase-interceptors"
+
+[features]
+default = []
+with-axum = ["dep:axum", "dep:tower", "dep:http"]
+
+[dependencies]
+async-trait = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+http = { version = "1", optional = true }
+futures = "0.3"
+
+soulbase-types = { path = "../soulbase-types", version = "1.0.0" }
+soulbase-errors = { path = "../soulbase-errors", version = "1.0.0" }
+soulbase-auth = { path = "../soulbase-auth", version = "1.0.0" }
+
+axum = { version = "0.7", optional = true, default-features = false, features = ["json"] }
+tower = { version = "0.4", optional = true }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+serde_json = "1"

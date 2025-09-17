@@ -126,6 +126,8 @@ dependencies = [
  "pin-project-lite",
  "rustversion",
  "serde",
+ "serde_json",
+ "serde_path_to_error",
  "sync_wrapper",
  "tower 0.5.2",
  "tower-layer",
@@ -1493,6 +1495,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde_path_to_error"
+version = "0.1.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "10a9ff822e371bb5403e391ecd83e182e0e77ba7f6fe0160b795797109d1b457"
+dependencies = [
+ "itoa",
+ "serde",
+ "serde_core",
+]
+
+[[package]]
 name = "serde_spanned"
 version = "0.6.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1576,6 +1589,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "soulbase-auth"
+version = "1.0.0"
+dependencies = [
+ "ahash",
+ "async-trait",
+ "base64",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "soulbase-errors",
+ "soulbase-types",
+ "thiserror 1.0.69",
+ "tokio",
+]
+
+[[package]]
 name = "soulbase-config"
 version = "1.0.0"
 dependencies = [
@@ -1610,6 +1639,26 @@ dependencies = [
  "sqlx",
  "thiserror 1.0.69",
  "tonic",
+]
+
+[[package]]
+name = "soulbase-interceptors"
+version = "1.0.0"
+dependencies = [
+ "async-trait",
+ "axum",
+ "chrono",
+ "futures",
+ "http",
+ "serde",
+ "serde_json",
+ "soulbase-auth",
+ "soulbase-errors",
+ "soulbase-types",
+ "thiserror 1.0.69",
+ "tokio",
+ "tower 0.4.13",
+ "uuid",
 ]
 
 [[package]]
