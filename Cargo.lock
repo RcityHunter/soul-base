@@ -1650,6 +1650,7 @@ dependencies = [
  "chrono",
  "futures",
  "http",
+ "parking_lot",
  "serde",
  "serde_json",
  "soulbase-auth",
@@ -1657,6 +1658,7 @@ dependencies = [
  "soulbase-types",
  "thiserror 1.0.69",
  "tokio",
+ "tonic",
  "tower 0.4.13",
  "uuid",
 ]

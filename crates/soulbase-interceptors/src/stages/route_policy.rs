@@ -32,11 +32,10 @@ impl Stage for RoutePolicyStage {
             _ => Action::Read,
         };
 
-        let attrs = if spec.bind.attrs_from_body {
-            req.read_json().await.unwrap_or_else(|_| serde_json::json!({}))
-        } else {
-            serde_json::json!({})
-        };
+        let mut attrs = spec.bind.attrs_template.clone().unwrap_or_else(|| serde_json::json!({}));
+        if spec.bind.attrs_from_body {
+            attrs = req.read_json().await.unwrap_or_else(|_| serde_json::json!({}));
+        }
 
         cx.route = Some(RouteBinding { resource, action, attrs });
         Ok(StageOutcome::Continue)

@@ -1,6 +1,8 @@
 use async_trait::async_trait;
+use http::Extensions;
 use serde::{Deserialize, Serialize};
 use soulbase_types::prelude::*;
+use std::time::Duration;
 
 #[derive(Clone, Debug)]
 pub struct InterceptContext {
@@ -13,6 +15,10 @@ pub struct InterceptContext {
     pub obligations: Vec<Obligation>,
     pub envelope_seed: EnvelopeSeed,
     pub authn_input: Option<soulbase_auth::prelude::AuthnInput>,
+    pub config_version: Option<String>,
+    pub config_checksum: Option<String>,
+    pub resilience: ResilienceConfig,
+    pub extensions: Extensions,
 }
 
 impl Default for InterceptContext {
@@ -31,6 +37,10 @@ impl Default for InterceptContext {
             obligations: Vec::new(),
             envelope_seed: EnvelopeSeed::default(),
             authn_input: None,
+            config_version: None,
+            config_checksum: None,
+            resilience: ResilienceConfig::default(),
+            extensions: Extensions::new(),
         }
     }
 }
@@ -51,6 +61,23 @@ pub struct RouteBinding {
 }
 
 pub type Obligation = soulbase_auth::prelude::Obligation;
+
+#[derive(Clone, Copy, Debug)]
+pub struct ResilienceConfig {
+    pub timeout: Duration,
+    pub max_retries: usize,
+    pub backoff: Duration,
+}
+
+impl Default for ResilienceConfig {
+    fn default() -> Self {
+        Self {
+            timeout: Duration::from_secs(5),
+            max_retries: 0,
+            backoff: Duration::from_millis(0),
+        }
+    }
+}
 
 #[async_trait]
 pub trait ProtoRequest: Send {

@@ -11,17 +11,26 @@ documentation = "https://github.com/RcityHunter/soul-base/tree/main/crates/soulb
 
 [features]
 default = []
-with-axum = ["dep:axum", "dep:tower", "dep:http"]
+with-axum = ["axum", "tower"]
+with-tonic = ["tonic"]
+with-tower = ["tower"]
+schema-json = []
+schema-pb = []
+store-redis = []
+resilience-tower = ["tower"]
+route-dsl = []
 
 [dependencies]
 async-trait = "0.1"
+futures = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "1"
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
-http = { version = "1", optional = true }
-futures = "0.3"
+http = "1"
+tokio = { version = "1", features = ["time"] }
+parking_lot = "0.12"
 
 soulbase-types = { path = "../soulbase-types", version = "1.0.0" }
 soulbase-errors = { path = "../soulbase-errors", version = "1.0.0" }
@@ -29,6 +38,7 @@ soulbase-auth = { path = "../soulbase-auth", version = "1.0.0" }
 
 axum = { version = "0.7", optional = true, default-features = false, features = ["json"] }
 tower = { version = "0.4", optional = true }
+tonic = { version = "0.12", optional = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

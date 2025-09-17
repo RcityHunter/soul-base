@@ -1,12 +1,15 @@
-pub use crate::context::{InterceptContext, RouteBinding, ProtoRequest, ProtoResponse};
+pub use crate::context::{InterceptContext, ProtoRequest, ProtoResponse, RouteBinding};
 pub use crate::errors::InterceptError;
 pub use crate::policy::dsl::RoutePolicy;
 pub use crate::policy::model::{MatchCond, RouteBindingSpec, RoutePolicySpec};
 pub use crate::stages::context_init::ContextInitStage;
 pub use crate::stages::route_policy::RoutePolicyStage;
 pub use crate::stages::authn_map::AuthnMapStage;
+pub use crate::stages::tenant_guard::TenantGuardStage;
 pub use crate::stages::authz_quota::AuthzQuotaStage;
 pub use crate::stages::schema_guard::SchemaGuardStage;
+pub use crate::stages::resilience::ResilienceStage;
 pub use crate::stages::obligations::ObligationsStage;
 pub use crate::stages::response_stamp::ResponseStampStage;
-pub use crate::stages::{InterceptorChain, Stage, StageOutcome};
+pub use crate::stages::error_norm::ErrorNormStage;
+pub use crate::stages::InterceptorChain;

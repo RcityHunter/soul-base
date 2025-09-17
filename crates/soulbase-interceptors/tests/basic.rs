@@ -2,6 +2,7 @@ use futures::FutureExt;
 use soulbase_auth::{prelude::*, AuthFacade};
 use soulbase_interceptors::prelude::*;
 use std::collections::HashMap;
+use std::time::Duration;
 
 struct MockReq {
     method: String,
@@ -56,11 +57,12 @@ async fn pipeline_allows_when_attrs_allow_true() {
     let policy = RoutePolicy::new(vec![RoutePolicySpec {
         when: MatchCond::Http {
             method: "POST".into(),
-            path_prefix: "/v1/tool/run".into(),
+            path_glob: "/v1/tool/run".into(),
         },
         bind: RouteBindingSpec {
             resource: "soul:tool:browser".into(),
             action: "Invoke".into(),
+            attrs_template: None,
             attrs_from_body: true,
         },
     }]);
@@ -69,7 +71,9 @@ async fn pipeline_allows_when_attrs_allow_true() {
         Box::new(ContextInitStage),
         Box::new(RoutePolicyStage { policy }),
         Box::new(AuthnMapStage { authenticator: Box::new(OidcAuthenticatorStub) }),
+        Box::new(TenantGuardStage),
         Box::new(AuthzQuotaStage { facade: AuthFacade::minimal() }),
+        Box::new(ResilienceStage::new(Duration::from_secs(5), 0, Duration::from_millis(0))),
         Box::new(ResponseStampStage),
     ]);
 
@@ -107,11 +111,12 @@ async fn pipeline_denies_when_not_allowed() {
     let policy = RoutePolicy::new(vec![RoutePolicySpec {
         when: MatchCond::Http {
             method: "POST".into(),
-            path_prefix: "/v1/tool/run".into(),
+            path_glob: "/v1/tool/run".into(),
         },
         bind: RouteBindingSpec {
             resource: "soul:tool:browser".into(),
             action: "Invoke".into(),
+            attrs_template: None,
             attrs_from_body: true,
         },
     }]);
@@ -119,7 +124,9 @@ async fn pipeline_denies_when_not_allowed() {
         Box::new(ContextInitStage),
         Box::new(RoutePolicyStage { policy }),
         Box::new(AuthnMapStage { authenticator: Box::new(OidcAuthenticatorStub) }),
+        Box::new(TenantGuardStage),
         Box::new(AuthzQuotaStage { facade: AuthFacade::minimal() }),
+        Box::new(ResilienceStage::new(Duration::from_secs(5), 0, Duration::from_millis(0))),
         Box::new(ResponseStampStage),
     ]);
 

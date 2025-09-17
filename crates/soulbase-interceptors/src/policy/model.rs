@@ -8,13 +8,15 @@ pub struct RoutePolicySpec {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum MatchCond {
-    Http { method: String, path_prefix: String },
+    Http { method: String, path_glob: String },
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct RouteBindingSpec {
     pub resource: String,
     pub action: String,
+    #[serde(default)]
+    pub attrs_template: Option<serde_json::Value>,
     #[serde(default)]
     pub attrs_from_body: bool,
 }

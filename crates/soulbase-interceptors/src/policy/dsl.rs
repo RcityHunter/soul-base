@@ -11,10 +11,18 @@ impl RoutePolicy {
     }
 
     pub fn match_http(&self, method: &str, path: &str) -> Option<&RoutePolicySpec> {
-        self.rules.iter().find(|r| match &r.when {
-            MatchCond::Http { method: m, path_prefix } => {
-                m.eq_ignore_ascii_case(method) && path.starts_with(path_prefix)
+        self.rules.iter().find(|rule| match &rule.when {
+            MatchCond::Http { method: expected, path_glob } => {
+                expected.eq_ignore_ascii_case(method) && path_matches(path_glob, path)
             }
         })
+    }
+}
+
+fn path_matches(glob: &str, path: &str) -> bool {
+    if let Some(stripped) = glob.strip_suffix('*') {
+        path.starts_with(stripped)
+    } else {
+        glob == path
     }
 }

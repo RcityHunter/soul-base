@@ -24,16 +24,6 @@ impl Stage for AuthzQuotaStage {
             return write_error(rsp, InterceptError::deny_policy("Route not bound")).await;
         };
 
-        if let (Some(header_tenant), Some(subject)) = (cx.tenant_header.as_ref(), cx.subject.as_ref()) {
-            if &subject.tenant.0 != header_tenant {
-                return write_error(
-                    rsp,
-                    InterceptError::from_public(codes::AUTH_FORBIDDEN, "Tenant mismatch"),
-                )
-                .await;
-            }
-        }
-
         let decision = self
             .facade
             .authorize(

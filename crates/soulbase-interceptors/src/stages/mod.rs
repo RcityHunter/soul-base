@@ -1,5 +1,6 @@
 use crate::context::{InterceptContext, ProtoRequest, ProtoResponse};
 use crate::errors::InterceptError;
+use crate::stages::resilience::run_with_resilience;
 use async_trait::async_trait;
 use futures::future::BoxFuture;
 
@@ -38,6 +39,7 @@ impl InterceptorChain {
     where
         F: for<'a> FnOnce(&'a mut InterceptContext, &'a mut dyn ProtoRequest) -> BoxFuture<'a, Result<serde_json::Value, InterceptError>> + Send,
     {
+        let mut handler_opt = Some(handler);
         for stage in &self.stages {
             match stage.handle(&mut cx, req, rsp).await? {
                 StageOutcome::Continue => {}
@@ -45,7 +47,10 @@ impl InterceptorChain {
             }
         }
 
-        let body = handler(&mut cx, req).await?;
+        let handler = handler_opt.take().expect("handler consumed");
+        let config = cx.resilience;
+        let fut = handler(&mut cx, req);
+        let body = run_with_resilience(config, fut).await?;
         rsp.set_status(200);
         rsp.write_json(&body).await?;
         Ok(())
@@ -55,7 +60,10 @@ impl InterceptorChain {
 pub mod context_init;
 pub mod route_policy;
 pub mod authn_map;
+pub mod tenant_guard;
 pub mod authz_quota;
 pub mod schema_guard;
+pub mod resilience;
 pub mod obligations;
 pub mod response_stamp;
+pub mod error_norm;
