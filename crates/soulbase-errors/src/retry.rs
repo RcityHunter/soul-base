@@ -14,3 +14,15 @@ impl RetryClass {
         }
     }
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct BackoffHint {
+    pub initial_ms: u64,
+    pub max_ms: u64,
+}
+
+impl BackoffHint {
+    pub const fn new(initial_ms: u64, max_ms: u64) -> Self {
+        Self { initial_ms, max_ms }
+    }
+}

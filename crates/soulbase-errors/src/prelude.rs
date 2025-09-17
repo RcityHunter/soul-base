@@ -4,6 +4,6 @@ pub use crate::{
     labels::labels,
     model::{CauseEntry, ErrorBuilder, ErrorObj},
     render::{AuditErrorView, PublicErrorView},
-    retry::RetryClass,
+    retry::{BackoffHint, RetryClass},
     severity::Severity,
 };
