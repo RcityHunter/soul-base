@@ -2,6 +2,7 @@
 members = [
     "crates/soulbase-types",
     "crates/soulbase-errors",
+    "crates/soulbase-config",
 ]
 resolver = "2"
 
