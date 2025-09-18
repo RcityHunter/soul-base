@@ -5,6 +5,7 @@ use crate::errors::SandboxError;
 use crate::guard::{PolicyGuard, PolicyGuardDefault};
 use crate::model::{ExecOp, ExecResult, Profile};
 use crate::{budget::MemoryBudget, evidence::EvidenceSink};
+use serde_json::json;
 use soulbase_types::prelude::Id;
 
 pub use fs::FsExecutor;
@@ -45,6 +46,11 @@ impl Sandbox {
                 self.fs.execute(profile, &op).await
             }
             ExecOp::NetHttp { .. } => self.net.execute(profile, &op).await,
+            ExecOp::TmpAlloc { size_bytes } => Ok(ExecResult::success(json!({
+                "simulated": true,
+                "size_bytes": size_bytes,
+                "tool": profile.tool_name,
+            }))),
         };
         match result {
             Ok(res) => {

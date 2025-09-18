@@ -114,6 +114,9 @@ pub enum ExecOp {
         headers: HashMap<String, String>,
         body_b64: Option<String>,
     },
+    TmpAlloc {
+        size_bytes: u64,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -139,6 +142,7 @@ impl ExecOp {
             ExecOp::FsWrite { .. } => "fs_write",
             ExecOp::FsList { .. } => "fs_list",
             ExecOp::NetHttp { .. } => "net_http",
+            ExecOp::TmpAlloc { .. } => "tmp_alloc",
         }
     }
 }

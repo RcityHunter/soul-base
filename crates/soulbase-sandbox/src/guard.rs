@@ -21,6 +21,7 @@ impl PolicyGuard for PolicyGuardDefault {
             ExecOp::FsWrite { path, .. } => validate_fs(profile, path, CapabilityKind::Write),
             ExecOp::FsList { path } => validate_fs(profile, path, CapabilityKind::List),
             ExecOp::NetHttp { method, url, .. } => validate_net(profile, method, url),
+            ExecOp::TmpAlloc { .. } => validate_tmp(profile),
         }
     }
 }
@@ -56,6 +57,18 @@ fn validate_fs(
         ));
     }
     Ok(())
+}
+
+fn validate_tmp(profile: &Profile) -> Result<(), SandboxError> {
+    if profile
+        .capabilities
+        .iter()
+        .any(|cap| matches!(cap, Capability::TmpUse))
+    {
+        Ok(())
+    } else {
+        Err(SandboxError::permission("tmp capability not granted"))
+    }
 }
 
 fn validate_net(profile: &Profile, method: &str, url_str: &str) -> Result<(), SandboxError> {
