@@ -38,12 +38,24 @@ impl ConfigSnapshot {
         }
     }
 
-    pub fn version(&self) -> &SnapshotVersion { &self.version }
-    pub fn checksum(&self) -> &Checksum { &self.checksum }
-    pub fn issued_at_ms(&self) -> i64 { self.issued_at_ms }
-    pub fn tree(&self) -> &serde_json::Value { &self.tree }
-    pub fn provenance(&self) -> &[ProvenanceEntry] { &self.provenance }
-    pub fn reload_policy(&self) -> Option<&str> { self.reload_policy.as_deref() }
+    pub fn version(&self) -> &SnapshotVersion {
+        &self.version
+    }
+    pub fn checksum(&self) -> &Checksum {
+        &self.checksum
+    }
+    pub fn issued_at_ms(&self) -> i64 {
+        self.issued_at_ms
+    }
+    pub fn tree(&self) -> &serde_json::Value {
+        &self.tree
+    }
+    pub fn provenance(&self) -> &[ProvenanceEntry] {
+        &self.provenance
+    }
+    pub fn reload_policy(&self) -> Option<&str> {
+        self.reload_policy.as_deref()
+    }
 
     pub fn get_raw(&self, path: &KeyPath) -> Option<&serde_json::Value> {
         access::get_path(&self.tree, &path.0)
@@ -58,6 +70,8 @@ impl ConfigSnapshot {
     }
 
     pub fn ns(&self, namespace: &NamespaceId) -> serde_json::Value {
-        access::get_path(&self.tree, &namespace.0).cloned().unwrap_or_else(|| serde_json::json!({}))
+        access::get_path(&self.tree, &namespace.0)
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({}))
     }
 }

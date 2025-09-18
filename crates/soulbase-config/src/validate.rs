@@ -3,7 +3,11 @@ use crate::errors::ConfigError;
 #[async_trait::async_trait]
 pub trait Validator: Send + Sync {
     async fn validate_boot(&self, tree: &serde_json::Value) -> Result<(), ConfigError>;
-    async fn validate_delta(&self, old: &serde_json::Value, new: &serde_json::Value) -> Result<(), ConfigError>;
+    async fn validate_delta(
+        &self,
+        old: &serde_json::Value,
+        new: &serde_json::Value,
+    ) -> Result<(), ConfigError>;
 }
 
 pub struct BasicValidator;
@@ -14,7 +18,11 @@ impl Validator for BasicValidator {
         Ok(())
     }
 
-    async fn validate_delta(&self, _old: &serde_json::Value, _new: &serde_json::Value) -> Result<(), ConfigError> {
+    async fn validate_delta(
+        &self,
+        _old: &serde_json::Value,
+        _new: &serde_json::Value,
+    ) -> Result<(), ConfigError> {
         Ok(())
     }
 }

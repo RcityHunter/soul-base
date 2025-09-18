@@ -91,5 +91,8 @@ pub trait ProtoRequest: Send {
 pub trait ProtoResponse: Send {
     fn set_status(&mut self, code: u16);
     fn insert_header(&mut self, name: &str, value: &str);
-    async fn write_json(&mut self, body: &serde_json::Value) -> Result<(), crate::errors::InterceptError>;
+    async fn write_json(
+        &mut self,
+        body: &serde_json::Value,
+    ) -> Result<(), crate::errors::InterceptError>;
 }

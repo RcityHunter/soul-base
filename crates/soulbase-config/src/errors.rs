@@ -6,7 +6,9 @@ use thiserror::Error;
 pub struct ConfigError(pub ErrorObj);
 
 impl ConfigError {
-    pub fn into_inner(self) -> ErrorObj { self.0 }
+    pub fn into_inner(self) -> ErrorObj {
+        self.0
+    }
 }
 
 pub fn schema_invalid(phase: &str, detail: &str) -> ConfigError {

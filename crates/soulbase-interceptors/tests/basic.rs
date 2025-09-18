@@ -70,10 +70,18 @@ async fn pipeline_allows_when_attrs_allow_true() {
     let chain = InterceptorChain::new(vec![
         Box::new(ContextInitStage),
         Box::new(RoutePolicyStage { policy }),
-        Box::new(AuthnMapStage { authenticator: Box::new(OidcAuthenticatorStub) }),
+        Box::new(AuthnMapStage {
+            authenticator: Box::new(OidcAuthenticatorStub),
+        }),
         Box::new(TenantGuardStage),
-        Box::new(AuthzQuotaStage { facade: AuthFacade::minimal() }),
-        Box::new(ResilienceStage::new(Duration::from_secs(5), 0, Duration::from_millis(0))),
+        Box::new(AuthzQuotaStage {
+            facade: AuthFacade::minimal(),
+        }),
+        Box::new(ResilienceStage::new(
+            Duration::from_secs(5),
+            0,
+            Duration::from_millis(0),
+        )),
         Box::new(ResponseStampStage),
     ]);
 
@@ -88,7 +96,11 @@ async fn pipeline_allows_when_attrs_allow_true() {
         .collect(),
         body: serde_json::json!({"allow": true, "cost": 2}),
     };
-    let mut res = MockRes { status: 0, headers: HashMap::new(), body: None };
+    let mut res = MockRes {
+        status: 0,
+        headers: HashMap::new(),
+        body: None,
+    };
 
     let result = chain
         .run_with_handler(InterceptContext::default(), &mut req, &mut res, |_, r| {
@@ -123,10 +135,18 @@ async fn pipeline_denies_when_not_allowed() {
     let chain = InterceptorChain::new(vec![
         Box::new(ContextInitStage),
         Box::new(RoutePolicyStage { policy }),
-        Box::new(AuthnMapStage { authenticator: Box::new(OidcAuthenticatorStub) }),
+        Box::new(AuthnMapStage {
+            authenticator: Box::new(OidcAuthenticatorStub),
+        }),
         Box::new(TenantGuardStage),
-        Box::new(AuthzQuotaStage { facade: AuthFacade::minimal() }),
-        Box::new(ResilienceStage::new(Duration::from_secs(5), 0, Duration::from_millis(0))),
+        Box::new(AuthzQuotaStage {
+            facade: AuthFacade::minimal(),
+        }),
+        Box::new(ResilienceStage::new(
+            Duration::from_secs(5),
+            0,
+            Duration::from_millis(0),
+        )),
         Box::new(ResponseStampStage),
     ]);
 
@@ -141,13 +161,16 @@ async fn pipeline_denies_when_not_allowed() {
         .collect(),
         body: serde_json::json!({"allow": false}),
     };
-    let mut res = MockRes { status: 0, headers: HashMap::new(), body: None };
+    let mut res = MockRes {
+        status: 0,
+        headers: HashMap::new(),
+        body: None,
+    };
 
     let result = chain
-        .run_with_handler(InterceptContext::default(), &mut req, &mut res, |_, _| async move {
-            Ok(serde_json::json!({"ok": false}))
-        }
-        .boxed())
+        .run_with_handler(InterceptContext::default(), &mut req, &mut res, |_, _| {
+            async move { Ok(serde_json::json!({"ok": false})) }.boxed()
+        })
         .await;
 
     assert!(result.is_ok());

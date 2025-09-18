@@ -13,14 +13,23 @@ impl NetExecutor {
         Self::default()
     }
 
-    pub async fn execute(&self, profile: &Profile, op: &ExecOp) -> Result<ExecResult, SandboxError> {
+    pub async fn execute(
+        &self,
+        profile: &Profile,
+        op: &ExecOp,
+    ) -> Result<ExecResult, SandboxError> {
         match op {
             ExecOp::NetHttp { method, url, .. } => self.http(profile, method, url).await,
             _ => Err(SandboxError::permission("network operation not supported")),
         }
     }
 
-    async fn http(&self, profile: &Profile, method: &str, url: &str) -> Result<ExecResult, SandboxError> {
+    async fn http(
+        &self,
+        profile: &Profile,
+        method: &str,
+        url: &str,
+    ) -> Result<ExecResult, SandboxError> {
         let parsed = Url::parse(url).map_err(|_| SandboxError::permission("invalid url"))?;
         let host = parsed.host_str().unwrap_or_default().to_string();
         let out = json!({

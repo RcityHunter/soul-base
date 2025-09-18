@@ -119,7 +119,10 @@ fn merge_into(dst: &mut ConfigMap, src: ConfigMap) {
     }
 }
 
-fn merge_object(dst: &mut serde_json::Map<String, serde_json::Value>, src: serde_json::Map<String, serde_json::Value>) {
+fn merge_object(
+    dst: &mut serde_json::Map<String, serde_json::Value>,
+    src: serde_json::Map<String, serde_json::Value>,
+) {
     for (key, value) in src {
         match (dst.get_mut(&key), value) {
             (Some(serde_json::Value::Object(dst_obj)), serde_json::Value::Object(src_obj)) => {
@@ -132,8 +135,14 @@ fn merge_object(dst: &mut serde_json::Map<String, serde_json::Value>, src: serde
     }
 }
 
-async fn resolve_secrets(map: &mut ConfigMap, resolvers: &[Arc<dyn SecretResolver>]) -> Result<(), ConfigError> {
-    fn visit<'a>(value: &'a mut serde_json::Value, resolvers: &'a [Arc<dyn SecretResolver>]) -> BoxFuture<'a, Result<(), ConfigError>> {
+async fn resolve_secrets(
+    map: &mut ConfigMap,
+    resolvers: &[Arc<dyn SecretResolver>],
+) -> Result<(), ConfigError> {
+    fn visit<'a>(
+        value: &'a mut serde_json::Value,
+        resolvers: &'a [Arc<dyn SecretResolver>],
+    ) -> BoxFuture<'a, Result<(), ConfigError>> {
         async move {
             match value {
                 serde_json::Value::String(s) => {

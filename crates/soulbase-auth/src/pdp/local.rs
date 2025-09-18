@@ -17,7 +17,11 @@ impl super::Authorizer for LocalAuthorizer {
             .unwrap_or(false);
         Ok(Decision {
             allow,
-            reason: if allow { None } else { Some("deny-by-default".into()) },
+            reason: if allow {
+                None
+            } else {
+                Some("deny-by-default".into())
+            },
             obligations: Vec::new(),
             evidence: serde_json::json!({
                 "policy": "local",

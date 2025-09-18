@@ -6,9 +6,15 @@ use std::hash::Hasher;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum Capability {
-    FsRead { path: String },
-    FsWrite { path: String },
-    FsList { path: String },
+    FsRead {
+        path: String,
+    },
+    FsWrite {
+        path: String,
+    },
+    FsList {
+        path: String,
+    },
     NetHttp {
         host: String,
         port: Option<u16>,

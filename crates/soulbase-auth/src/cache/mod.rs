@@ -1,5 +1,5 @@
-use async_trait::async_trait;
 use crate::model::{Decision, DecisionKey};
+use async_trait::async_trait;
 
 pub mod memory;
 

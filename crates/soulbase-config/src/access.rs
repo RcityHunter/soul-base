@@ -6,7 +6,11 @@ pub fn get_path<'a>(root: &'a serde_json::Value, dotted: &str) -> Option<&'a ser
     Some(current)
 }
 
-pub fn set_path(root: &mut serde_json::Map<String, serde_json::Value>, dotted: &str, value: serde_json::Value) {
+pub fn set_path(
+    root: &mut serde_json::Map<String, serde_json::Value>,
+    dotted: &str,
+    value: serde_json::Value,
+) {
     let mut current = root;
     let mut segments = dotted.split('.').peekable();
     while let Some(segment) = segments.next() {

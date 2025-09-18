@@ -1,14 +1,14 @@
 #![cfg(feature = "with-axum")]
 
+use crate::context::{InterceptContext, ProtoRequest, ProtoResponse};
+use crate::errors::InterceptError;
+use crate::stages::InterceptorChain;
+use async_trait::async_trait;
 use axum::body::{to_bytes, Body};
 use axum::http::{Request, StatusCode};
 use axum::response::Response;
 use axum::Json;
-use async_trait::async_trait;
 use futures::FutureExt;
-use crate::context::{InterceptContext, ProtoRequest, ProtoResponse};
-use crate::errors::InterceptError;
-use crate::stages::InterceptorChain;
 
 pub struct AxumReq<'a> {
     pub req: &'a mut Request<Body>,
@@ -84,11 +84,20 @@ where
     Fut: std::future::Future<Output = Result<serde_json::Value, InterceptError>> + Send + 'static,
 {
     let cx = InterceptContext::default();
-    let mut preq = AxumReq { req: &mut req, cached_json: None };
-    let mut pres = AxumRes { headers: http::HeaderMap::new(), status: StatusCode::OK, body: None };
+    let mut preq = AxumReq {
+        req: &mut req,
+        cached_json: None,
+    };
+    let mut pres = AxumRes {
+        headers: http::HeaderMap::new(),
+        status: StatusCode::OK,
+        body: None,
+    };
 
     match chain
-        .run_with_handler(cx, &mut preq, &mut pres, |ctx, req| handler(ctx, req).boxed())
+        .run_with_handler(cx, &mut preq, &mut pres, |ctx, req| {
+            handler(ctx, req).boxed()
+        })
         .await
     {
         Ok(()) => {

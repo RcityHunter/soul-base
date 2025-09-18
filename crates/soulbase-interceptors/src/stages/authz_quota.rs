@@ -18,7 +18,11 @@ impl Stage for AuthzQuotaStage {
         rsp: &mut dyn ProtoResponse,
     ) -> Result<StageOutcome, InterceptError> {
         let Some(authn_input) = cx.authn_input.clone() else {
-            return write_error(rsp, InterceptError::from_public(codes::AUTH_UNAUTHENTICATED, "Please sign in.")).await;
+            return write_error(
+                rsp,
+                InterceptError::from_public(codes::AUTH_UNAUTHENTICATED, "Please sign in."),
+            )
+            .await;
         };
         let Some(route) = cx.route.as_ref() else {
             return write_error(rsp, InterceptError::deny_policy("Route not bound")).await;

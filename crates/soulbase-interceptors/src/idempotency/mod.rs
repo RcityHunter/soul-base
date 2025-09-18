@@ -1,5 +1,5 @@
-use async_trait::async_trait;
 use crate::errors::InterceptError;
+use async_trait::async_trait;
 
 pub mod memory;
 

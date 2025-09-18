@@ -12,11 +12,17 @@ impl FsExecutor {
         Self::default()
     }
 
-    pub async fn execute(&self, profile: &Profile, op: &ExecOp) -> Result<ExecResult, SandboxError> {
+    pub async fn execute(
+        &self,
+        profile: &Profile,
+        op: &ExecOp,
+    ) -> Result<ExecResult, SandboxError> {
         match op {
             ExecOp::FsRead { path, offset, len } => self.read(profile, path, *offset, *len).await,
             ExecOp::FsList { path } => self.list(profile, path).await,
-            _ => Err(SandboxError::permission("filesystem operation not supported")),
+            _ => Err(SandboxError::permission(
+                "filesystem operation not supported",
+            )),
         }
     }
 

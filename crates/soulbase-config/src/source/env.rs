@@ -1,9 +1,6 @@
 use super::*;
 use crate::model::{KeyPath, Layer, ProvenanceEntry};
-use crate::{
-    access,
-    errors::ConfigError,
-};
+use crate::{access, errors::ConfigError};
 use chrono::Utc;
 
 pub struct EnvSource {
@@ -13,7 +10,9 @@ pub struct EnvSource {
 
 #[async_trait::async_trait]
 impl Source for EnvSource {
-    fn id(&self) -> &'static str { "env" }
+    fn id(&self) -> &'static str {
+        "env"
+    }
 
     async fn load(&self) -> Result<SourceSnapshot, ConfigError> {
         let mut map = serde_json::Map::new();

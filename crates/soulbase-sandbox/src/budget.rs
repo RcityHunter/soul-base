@@ -34,10 +34,9 @@ impl MemoryBudget {
 
         let bytes_in = match op {
             ExecOp::FsRead { len, .. } => len.map(|l| l as i64).unwrap_or(0),
-            ExecOp::NetHttp { body_b64, .. } => body_b64
-                .as_ref()
-                .map(|b| b.len() as i64)
-                .unwrap_or(0),
+            ExecOp::NetHttp { body_b64, .. } => {
+                body_b64.as_ref().map(|b| b.len() as i64).unwrap_or(0)
+            }
             _ => 0,
         };
         state.bytes_in_used += bytes_in;

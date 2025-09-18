@@ -1,23 +1,19 @@
+use soulbase_sandbox::config::{Mappings, PolicyConfig, Whitelists};
+use soulbase_sandbox::model::capability_fingerprint;
+use soulbase_sandbox::model::{Budget, Capability, SafetyClass, SideEffect};
 use soulbase_sandbox::prelude::*;
 use soulbase_sandbox::{
-    budget::MemoryBudget,
-    evidence::MemoryEvidence,
-    exec::Sandbox,
-    guard::PolicyGuardDefault,
-    model::ExecOp,
-    model::Grant,
-    model::ToolManifestLite,
-    profile::ProfileBuilderDefault,
+    budget::MemoryBudget, evidence::MemoryEvidence, exec::Sandbox, guard::PolicyGuardDefault,
+    model::ExecOp, model::Grant, model::ToolManifestLite, profile::ProfileBuilderDefault,
 };
-use soulbase_sandbox::config::{Mappings, PolicyConfig, Whitelists};
-use soulbase_sandbox::model::{Budget, Capability, SafetyClass, SideEffect};
-use soulbase_sandbox::model::capability_fingerprint;
 use soulbase_types::prelude::*;
 use std::collections::HashMap;
 use tempfile::tempdir;
 
 fn grant_for_fs_read(root: &str) -> Grant {
-    let capabilities = vec![Capability::FsRead { path: root.to_string() }];
+    let capabilities = vec![Capability::FsRead {
+        path: root.to_string(),
+    }];
     Grant {
         tenant: TenantId("tenantA".into()),
         subject_id: Id("user_1".into()),
@@ -38,7 +34,9 @@ fn grant_for_fs_read(root: &str) -> Grant {
 fn manifest_for_fs_read(root: &str) -> ToolManifestLite {
     ToolManifestLite {
         name: "fs_reader".into(),
-        permissions: vec![Capability::FsRead { path: root.to_string() }],
+        permissions: vec![Capability::FsRead {
+            path: root.to_string(),
+        }],
         safety_class: SafetyClass::Low,
         side_effect: SideEffect::Read,
     }
@@ -58,7 +56,9 @@ fn policy_for_root(root: &str) -> PolicyConfig {
 async fn fs_read_allows_and_evidence_recorded() {
     let dir = tempdir().unwrap();
     let file_path = dir.path().join("hello.txt");
-    tokio::fs::write(&file_path, b"hello sandbox").await.unwrap();
+    tokio::fs::write(&file_path, b"hello sandbox")
+        .await
+        .unwrap();
     let root = dir.path().display().to_string();
 
     let grant = grant_for_fs_read(&root);
@@ -73,7 +73,14 @@ async fn fs_read_allows_and_evidence_recorded() {
 
     let guard = PolicyGuardDefault;
     guard
-        .validate(&profile, &ExecOp::FsRead { path: "hello.txt".into(), offset: None, len: None })
+        .validate(
+            &profile,
+            &ExecOp::FsRead {
+                path: "hello.txt".into(),
+                offset: None,
+                len: None,
+            },
+        )
         .await
         .expect("guard");
 

@@ -7,6 +7,6 @@ pub use crate::{
     snapshot::ConfigSnapshot,
     source::{Source, SourceSnapshot},
     switch::SnapshotSwitch,
-    watch::{ChangeNotice, WatchTx, Watcher},
     validate::{BasicValidator, Validator},
+    watch::{ChangeNotice, WatchTx, Watcher},
 };

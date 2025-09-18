@@ -12,7 +12,9 @@ pub struct CliArgsSource {
 
 #[async_trait::async_trait]
 impl Source for CliArgsSource {
-    fn id(&self) -> &'static str { "cli" }
+    fn id(&self) -> &'static str {
+        "cli"
+    }
 
     async fn load(&self) -> Result<SourceSnapshot, ConfigError> {
         let mut map = serde_json::Map::new();

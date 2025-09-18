@@ -43,7 +43,9 @@ pub struct InMemorySchemaRegistry {
 
 impl InMemorySchemaRegistry {
     pub fn new() -> Self {
-        Self { inner: RwLock::new(HashMap::new()) }
+        Self {
+            inner: RwLock::new(HashMap::new()),
+        }
     }
 }
 
@@ -55,9 +57,13 @@ impl SchemaRegistry for InMemorySchemaRegistry {
         schema: RootSchema,
         meta: HashMap<KeyPath, FieldMeta>,
     ) -> Result<(), ConfigError> {
-        self.inner
-            .write()
-            .insert(ns.0.clone(), NamespaceView { json_schema: schema, field_meta: meta });
+        self.inner.write().insert(
+            ns.0.clone(),
+            NamespaceView {
+                json_schema: schema,
+                field_meta: meta,
+            },
+        );
         Ok(())
     }
 
@@ -66,8 +72,7 @@ impl SchemaRegistry for InMemorySchemaRegistry {
     }
 
     async fn list_namespaces(&self) -> Vec<(NamespaceId, NamespaceView)> {
-        self
-            .inner
+        self.inner
             .read()
             .iter()
             .map(|(name, view)| (NamespaceId(name.clone()), view.clone()))

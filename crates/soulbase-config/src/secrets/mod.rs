@@ -11,7 +11,9 @@ pub struct NoopSecretResolver;
 
 #[async_trait]
 impl SecretResolver for NoopSecretResolver {
-    fn id(&self) -> &'static str { "noop" }
+    fn id(&self) -> &'static str {
+        "noop"
+    }
 
     async fn resolve(&self, uri: &str) -> Result<serde_json::Value, ConfigError> {
         Ok(serde_json::Value::String(uri.to_string()))

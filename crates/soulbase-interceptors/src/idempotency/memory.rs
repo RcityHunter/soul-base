@@ -10,7 +10,9 @@ pub struct MemoryIdempotencyStore {
 
 impl MemoryIdempotencyStore {
     pub fn new() -> Self {
-        Self { keys: Mutex::new(HashSet::new()) }
+        Self {
+            keys: Mutex::new(HashSet::new()),
+        }
     }
 }
 

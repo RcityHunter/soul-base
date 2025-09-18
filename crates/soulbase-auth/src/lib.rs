@@ -1,15 +1,15 @@
-pub mod model;
-pub mod authn;
 pub mod attr;
-pub mod pdp;
-pub mod quota;
-pub mod consent;
+pub mod authn;
 pub mod cache;
-pub mod intercept;
+pub mod consent;
 pub mod errors;
-pub mod observe;
 pub mod events;
+pub mod intercept;
+pub mod model;
+pub mod observe;
+pub mod pdp;
 pub mod prelude;
+pub mod quota;
 
 use prelude::*;
 use soulbase_types::prelude::*;
@@ -56,7 +56,11 @@ impl AuthFacade {
         };
 
         let mut merged_attrs = request.attrs.clone();
-        let augmentation = self.attr_provider.augment(&request).await.unwrap_or_else(|_| serde_json::json!({}));
+        let augmentation = self
+            .attr_provider
+            .augment(&request)
+            .await
+            .unwrap_or_else(|_| serde_json::json!({}));
         merge_attrs(&mut merged_attrs, augmentation);
 
         let cache_key = decision_key(&request, &merged_attrs);

@@ -1,7 +1,11 @@
 use crate::model::{Capability, ExecOp};
 use std::collections::BTreeMap;
 
-pub fn labels(tenant: &str, capability: Option<&Capability>, op: &ExecOp) -> BTreeMap<&'static str, String> {
+pub fn labels(
+    tenant: &str,
+    capability: Option<&Capability>,
+    op: &ExecOp,
+) -> BTreeMap<&'static str, String> {
     let mut map = BTreeMap::new();
     map.insert("tenant", tenant.to_string());
     map.insert("op", op.kind_name().to_string());

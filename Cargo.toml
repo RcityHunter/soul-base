@@ -1,4 +1,4 @@
-[workspace]
+﻿[workspace]
 members = [
     "crates/soulbase-types",
     "crates/soulbase-errors",
@@ -6,6 +6,8 @@ members = [
     "crates/soulbase-auth",
     "crates/soulbase-interceptors",
     "crates/soulbase-sandbox",
+    "crates/soulbase-llm",
+    "crates/soulbase-tools"
 ]
 resolver = "2"
 

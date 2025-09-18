@@ -37,7 +37,11 @@ impl InterceptorChain {
         handler: F,
     ) -> Result<(), InterceptError>
     where
-        F: for<'a> FnOnce(&'a mut InterceptContext, &'a mut dyn ProtoRequest) -> BoxFuture<'a, Result<serde_json::Value, InterceptError>> + Send,
+        F: for<'a> FnOnce(
+                &'a mut InterceptContext,
+                &'a mut dyn ProtoRequest,
+            ) -> BoxFuture<'a, Result<serde_json::Value, InterceptError>>
+            + Send,
     {
         let mut handler_opt = Some(handler);
         for stage in &self.stages {
@@ -57,13 +61,13 @@ impl InterceptorChain {
     }
 }
 
-pub mod context_init;
-pub mod route_policy;
 pub mod authn_map;
-pub mod tenant_guard;
 pub mod authz_quota;
-pub mod schema_guard;
-pub mod resilience;
-pub mod obligations;
-pub mod response_stamp;
+pub mod context_init;
 pub mod error_norm;
+pub mod obligations;
+pub mod resilience;
+pub mod response_stamp;
+pub mod route_policy;
+pub mod schema_guard;
+pub mod tenant_guard;

@@ -2,7 +2,7 @@ use crate::context::{InterceptContext, ProtoRequest, ProtoResponse};
 use crate::errors::InterceptError;
 use crate::stages::{Stage, StageOutcome};
 use async_trait::async_trait;
-use soulbase_auth::prelude::{AuthnInput, Authenticator};
+use soulbase_auth::prelude::{Authenticator, AuthnInput};
 use soulbase_errors::prelude::*;
 
 pub struct AuthnMapStage {

@@ -7,8 +7,13 @@ fn load_minimal_snapshot_and_read() {
     let loader = Loader {
         sources: vec![
             Arc::new(FileSource { paths: vec![] }) as Arc<dyn Source>,
-            Arc::new(EnvSource { prefix: "SOUL__".into(), separator: "__".into() }) as Arc<dyn Source>,
-            Arc::new(CliArgsSource { args: vec!["--app.name=Soulseed".into()] }) as Arc<dyn Source>,
+            Arc::new(EnvSource {
+                prefix: "SOUL__".into(),
+                separator: "__".into(),
+            }) as Arc<dyn Source>,
+            Arc::new(CliArgsSource {
+                args: vec!["--app.name=Soulseed".into()],
+            }) as Arc<dyn Source>,
         ],
         secrets: vec![Arc::new(NoopSecretResolver) as Arc<dyn SecretResolver>],
         validator: Arc::new(BasicValidator),

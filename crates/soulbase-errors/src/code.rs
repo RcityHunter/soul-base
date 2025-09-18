@@ -1,8 +1,4 @@
-use crate::{
-    kind::ErrorKind,
-    retry::RetryClass,
-    severity::Severity,
-};
+use crate::{kind::ErrorKind, retry::RetryClass, severity::Severity};
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::HashMap;

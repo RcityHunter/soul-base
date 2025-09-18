@@ -14,7 +14,9 @@ pub struct FileSource {
 
 #[async_trait::async_trait]
 impl Source for FileSource {
-    fn id(&self) -> &'static str { "file" }
+    fn id(&self) -> &'static str {
+        "file"
+    }
 
     async fn load(&self) -> Result<SourceSnapshot, ConfigError> {
         let mut merged = Map::new();
@@ -66,14 +68,19 @@ impl Source for FileSource {
             }
         }
 
-        Ok(SourceSnapshot { map: merged, provenance })
+        Ok(SourceSnapshot {
+            map: merged,
+            provenance,
+        })
     }
 }
 
 fn merge_into(dst: &mut Map<String, Value>, src: Map<String, Value>) {
     for (key, value) in src {
         match (dst.get_mut(&key), value) {
-            (Some(Value::Object(dst_obj)), Value::Object(src_obj)) => merge_object(dst_obj, src_obj),
+            (Some(Value::Object(dst_obj)), Value::Object(src_obj)) => {
+                merge_object(dst_obj, src_obj)
+            }
             (_, v) => {
                 dst.insert(key, v);
             }
@@ -84,7 +91,9 @@ fn merge_into(dst: &mut Map<String, Value>, src: Map<String, Value>) {
 fn merge_object(dst: &mut Map<String, Value>, src: Map<String, Value>) {
     for (key, value) in src {
         match (dst.get_mut(&key), value) {
-            (Some(Value::Object(dst_obj)), Value::Object(src_obj)) => merge_object(dst_obj, src_obj),
+            (Some(Value::Object(dst_obj)), Value::Object(src_obj)) => {
+                merge_object(dst_obj, src_obj)
+            }
             (_, v) => {
                 dst.insert(key, v);
             }
