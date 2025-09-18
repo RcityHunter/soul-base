@@ -5,6 +5,7 @@ members = [
     "crates/soulbase-config",
     "crates/soulbase-auth",
     "crates/soulbase-interceptors",
+    "crates/soulbase-sandbox",
 ]
 resolver = "2"
 

@@ -48,6 +48,7 @@ pub mod codes {
     pub const PROVIDER_UNAVAILABLE: ErrorCode = ErrorCode("PROVIDER.UNAVAILABLE");
     pub const STORAGE_NOT_FOUND: ErrorCode = ErrorCode("STORAGE.NOT_FOUND");
     pub const UNKNOWN_INTERNAL: ErrorCode = ErrorCode("UNKNOWN.INTERNAL");
+    pub const SANDBOX_PERMISSION_DENY: ErrorCode = ErrorCode("SANDBOX.PERMISSION_DENY");
 }
 
 const fn grpc(code: i32) -> Option<i32> {
@@ -173,6 +174,16 @@ pub static REGISTRY: Lazy<HashMap<&'static str, CodeSpec>> = Lazy::new(|| {
         retryable: RetryClass::Transient,
         severity: Severity::Critical,
         default_user_msg: "Internal error. Please retry later.",
+    });
+
+    add(CodeSpec {
+        code: SANDBOX_PERMISSION_DENY,
+        kind: ErrorKind::Sandbox,
+        http_status: 403,
+        grpc_status: grpc(7),
+        retryable: RetryClass::Permanent,
+        severity: Severity::Warn,
+        default_user_msg: "Operation denied by sandbox policy.",
     });
 
     map

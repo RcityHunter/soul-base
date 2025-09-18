@@ -1069,6 +1069,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
 
 [[package]]
+name = "path-clean"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "17359afc20d7ab31fdb42bb844c8b3bb1dabd7dcf7e68428492da7f16966fcef"
+
+[[package]]
 name = "percent-encoding"
 version = "2.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1660,6 +1666,29 @@ dependencies = [
  "tokio",
  "tonic",
  "tower 0.4.13",
+ "uuid",
+]
+
+[[package]]
+name = "soulbase-sandbox"
+version = "1.0.0"
+dependencies = [
+ "ahash",
+ "async-trait",
+ "base64",
+ "chrono",
+ "parking_lot",
+ "path-clean",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "soulbase-errors",
+ "soulbase-types",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "url",
  "uuid",
 ]
 

@@ -1,0 +1,42 @@
+[package]
+name = "soulbase-sandbox"
+version = "1.0.0"
+edition = "2021"
+rust-version = "1.78"
+license = "Apache-2.0"
+description = "Controlled Execution Sandbox (least-privilege, evidence-first) for the Soul platform"
+repository = "https://github.com/RcityHunter/soul-base"
+homepage = "https://github.com/RcityHunter/soul-base"
+documentation = "https://github.com/RcityHunter/soul-base/tree/main/crates/soulbase-sandbox"
+
+[features]
+default = ["exec-fs", "exec-net"]
+exec-fs = []
+exec-net = []
+net-reqwest = ["reqwest"]
+qos = []
+observe = []
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+async-trait = "0.1"
+thiserror = "1"
+ahash = "0.8"
+sha2 = "0.10"
+base64 = "0.22"
+path-clean = "1.0"
+parking_lot = "0.12"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+uuid = { version = "1", features = ["v4"] }
+url = "2"
+tokio = { version = "1", features = ["fs", "io-util", "macros", "rt", "time"] }
+
+soulbase-types = { path = "../soulbase-types", version = "1.0.0" }
+soulbase-errors = { path = "../soulbase-errors", version = "1.0.0" }
+
+reqwest = { version = "0.12", optional = true, default-features = false, features = ["rustls-tls"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "fs"] }
+tempfile = "3"
