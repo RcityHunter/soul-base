@@ -1,4 +1,4 @@
-﻿[workspace]
+[workspace]
 members = [
     "crates/soulbase-types",
     "crates/soulbase-errors",
@@ -8,10 +8,12 @@ members = [
     "crates/soulbase-sandbox",
     "crates/soulbase-llm",
     "crates/soulbase-tools",
-    "crates/soulbase-storage"
+    "crates/soulbase-storage",
+    "crates/soulbase-tx"
 ]
 resolver = "2"
 
 [workspace.package]
 edition = "2021"
 license = "Apache-2.0"
+

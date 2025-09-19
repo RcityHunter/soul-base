@@ -4083,6 +4083,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "soulbase-tx"
+version = "1.0.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "futures-util",
+ "parking_lot",
+ "rand 0.8.5",
+ "serde",
+ "serde_json",
+ "soulbase-errors",
+ "soulbase-types",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "soulbase-types"
 version = "1.0.0"
 dependencies = [
