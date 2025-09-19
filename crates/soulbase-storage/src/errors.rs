@@ -1,0 +1,48 @@
+﻿use soulbase_errors::prelude::*;
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+#[error("{0:?}")]
+pub struct StorageError(pub ErrorObj);
+
+impl StorageError {
+    pub fn into_inner(self) -> ErrorObj {
+        self.0
+    }
+
+    pub fn not_found(msg: &str) -> Self {
+        StorageError(
+            ErrorBuilder::new(codes::STORAGE_NOT_FOUND)
+                .user_msg("Resource not found.")
+                .dev_msg(msg)
+                .build(),
+        )
+    }
+
+    pub fn conflict(msg: &str) -> Self {
+        StorageError(
+            ErrorBuilder::new(codes::UNKNOWN_INTERNAL)
+                .user_msg("Storage conflict occurred.")
+                .dev_msg(msg)
+                .build(),
+        )
+    }
+
+    pub fn bad_request(msg: &str) -> Self {
+        StorageError(
+            ErrorBuilder::new(codes::SCHEMA_VALIDATION)
+                .user_msg("Invalid storage request.")
+                .dev_msg(msg)
+                .build(),
+        )
+    }
+
+    pub fn internal(msg: &str) -> Self {
+        StorageError(
+            ErrorBuilder::new(codes::UNKNOWN_INTERNAL)
+                .user_msg("Storage internal error.")
+                .dev_msg(msg)
+                .build(),
+        )
+    }
+}

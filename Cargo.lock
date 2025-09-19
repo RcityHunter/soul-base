@@ -2189,6 +2189,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "soulbase-storage"
+version = "1.0.0"
+dependencies = [
+ "ahash",
+ "async-trait",
+ "chrono",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "soulbase-errors",
+ "soulbase-types",
+ "thiserror 1.0.69",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "soulbase-tools"
 version = "1.0.0"
 dependencies = [

@@ -7,7 +7,8 @@ members = [
     "crates/soulbase-interceptors",
     "crates/soulbase-sandbox",
     "crates/soulbase-llm",
-    "crates/soulbase-tools"
+    "crates/soulbase-tools",
+    "crates/soulbase-storage"
 ]
 resolver = "2"
 
