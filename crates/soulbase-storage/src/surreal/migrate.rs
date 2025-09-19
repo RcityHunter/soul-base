@@ -27,18 +27,24 @@ impl SurrealMigrator {
     }
 
     async fn ensure_table(&self) -> Result<(), StorageError> {
-        let stmt = format!("DEFINE TABLE {} SCHEMALESS", self.table);
-        match self.client.query(stmt).await {
-            Ok(_) => Ok(()),
-            Err(err) => {
+        let statements = vec![
+            format!("DEFINE TABLE {} SCHEMALESS", self.table),
+            format!("DEFINE FIELD version ON {} TYPE string", self.table),
+            format!("DEFINE FIELD checksum ON {} TYPE string", self.table),
+            format!(
+                "DEFINE FIELD applied_at ON {} TYPE datetime DEFAULT time::now()",
+                self.table
+            ),
+        ];
+        for stmt in statements {
+            if let Err(err) = self.client.query(stmt).await {
                 let msg = err.to_string().to_lowercase();
-                if msg.contains("already") && msg.contains("defined") {
-                    Ok(())
-                } else {
-                    Err(map_surreal_error(err, "surreal migrate define"))
+                if !(msg.contains("already") && msg.contains("defined")) {
+                    return Err(map_surreal_error(err, "surreal migrate define"));
                 }
             }
         }
+        Ok(())
     }
 }
 
@@ -55,7 +61,7 @@ impl Migrator for SurrealMigrator {
         let mut response = self
             .client
             .query(format!(
-                "SELECT version FROM {} ORDER BY applied_at DESC LIMIT 1",
+                "SELECT version FROM {} ORDER BY version DESC LIMIT 1",
                 self.table
             ))
             .await

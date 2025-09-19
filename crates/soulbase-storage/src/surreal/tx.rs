@@ -1,6 +1,8 @@
 #![cfg(feature = "surreal")]
 
-use super::{binder::QueryBinder, errors::map_surreal_error, observe::record_backend};
+use super::{
+    binder::QueryBinder, errors::map_surreal_error, mapper::SurrealMapper, observe::record_backend,
+};
 use crate::errors::StorageError;
 use crate::spi::query::QueryExecutor;
 use crate::spi::tx::Transaction;
@@ -50,12 +52,20 @@ impl QueryExecutor for SurrealTransaction {
         let mut response = prepared
             .await
             .map_err(|err| map_surreal_error(err, "surreal tx query"))?;
-        let rows: Vec<Value> = match response.take(0) {
+        let rows: Vec<surrealdb::sql::Value> = match response.take(0) {
             Ok(rows) => rows,
-            Err(err) => return Err(map_surreal_error(err, "surreal tx query read")),
+            Err(err) => {
+                let msg = err.to_string();
+                if msg.contains("found None") {
+                    Vec::new()
+                } else {
+                    return Err(map_surreal_error(err, "surreal tx query read"));
+                }
+            }
         };
-        record_backend("surreal.tx.query", started.elapsed(), rows.len(), None);
-        Ok(Value::Array(rows))
+        let rows_json: Vec<Value> = rows.into_iter().map(SurrealMapper::to_json).collect();
+        record_backend("surreal.tx.query", started.elapsed(), rows_json.len(), None);
+        Ok(Value::Array(rows_json))
     }
 }
 
