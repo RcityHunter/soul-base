@@ -1,4 +1,4 @@
-﻿use soulbase_errors::prelude::*;
+use soulbase_errors::prelude::*;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -21,8 +21,17 @@ impl StorageError {
 
     pub fn conflict(msg: &str) -> Self {
         StorageError(
-            ErrorBuilder::new(codes::UNKNOWN_INTERNAL)
+            ErrorBuilder::new(codes::STORAGE_CONFLICT)
                 .user_msg("Storage conflict occurred.")
+                .dev_msg(msg)
+                .build(),
+        )
+    }
+
+    pub fn unavailable(msg: &str) -> Self {
+        StorageError(
+            ErrorBuilder::new(codes::STORAGE_UNAVAILABLE)
+                .user_msg("Storage backend unavailable.")
                 .dev_msg(msg)
                 .build(),
         )
@@ -32,6 +41,15 @@ impl StorageError {
         StorageError(
             ErrorBuilder::new(codes::SCHEMA_VALIDATION)
                 .user_msg("Invalid storage request.")
+                .dev_msg(msg)
+                .build(),
+        )
+    }
+
+    pub fn provider_unavailable(msg: &str) -> Self {
+        StorageError(
+            ErrorBuilder::new(codes::PROVIDER_UNAVAILABLE)
+                .user_msg("Upstream provider unavailable.")
                 .dev_msg(msg)
                 .build(),
         )

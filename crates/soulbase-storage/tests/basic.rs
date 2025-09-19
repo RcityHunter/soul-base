@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use soulbase_storage::mock::{
-    InMemoryGraph, InMemoryMigrator, InMemoryRepository, InMemoryVector, MockDatastore,
+    InMemoryGraph, InMemoryMigrator, InMemoryRepository, InMemorySearch, InMemoryVector,
+    MockDatastore, MockSession,
 };
 use soulbase_storage::model::{Entity, Page, QueryParams};
 use soulbase_storage::prelude::*;
@@ -89,8 +90,8 @@ async fn crud_and_select() {
 async fn graph_and_vector() {
     let datastore = MockDatastore::new();
     let repo: InMemoryRepository<Doc> = InMemoryRepository::new(&datastore);
-    let graph: InMemoryGraph = InMemoryGraph::new::<Doc>(&datastore);
-    let vectors: InMemoryVector = InMemoryVector::new::<Doc>(&datastore);
+    let graph = InMemoryGraph::<Doc>::new(&datastore);
+    let vectors = InMemoryVector::<Doc>::new(&datastore);
     let tenant = TenantId("tenantA".into());
 
     let a = Doc {
@@ -126,7 +127,7 @@ async fn graph_and_vector() {
         .await
         .unwrap();
     let hits: Vec<(Doc, f32)> = vectors
-        .knn(&tenant, &[1.0, 0.05, 0.0], 1, None)
+        .knn(&tenant, &[1.0, 0.12, 0.0], 1, None)
         .await
         .unwrap();
     assert_eq!(hits.len(), 1);
@@ -171,4 +172,54 @@ async fn migration_tracks_versions() {
 
     migrator.apply_down(&scripts).await.unwrap();
     assert_eq!(migrator.current_version().await.unwrap(), "none");
+}
+
+#[tokio::test]
+async fn search_returns_matches() {
+    let datastore = MockDatastore::new();
+    let repo: InMemoryRepository<Doc> = InMemoryRepository::new(&datastore);
+    let search = InMemorySearch::new::<Doc>(&datastore);
+    let tenant = TenantId("tenant-search".into());
+
+    let doc = Doc {
+        id: "doc:tenant-search_a".into(),
+        tenant: tenant.clone(),
+        title: "Soul storage vector".into(),
+        ver: 1,
+    };
+    let other = Doc {
+        id: "doc:tenant-search_b".into(),
+        tenant: tenant.clone(),
+        title: "Other record".into(),
+        ver: 1,
+    };
+
+    repo.create(&tenant, &doc).await.unwrap();
+    repo.create(&tenant, &other).await.unwrap();
+
+    let hits = search.search(&tenant, "vector", 5).await.unwrap();
+    assert_eq!(hits.items.len(), 1);
+    assert!(hits.items[0].to_string().contains("Soul storage"));
+}
+
+#[tokio::test]
+async fn mock_transaction_lifecycle() {
+    let datastore = MockDatastore::new();
+    let session_from_store = datastore.session().await.unwrap();
+    let mut tx = session_from_store.begin().await.unwrap();
+    assert!(tx.is_active());
+    tx.commit().await.unwrap();
+    assert!(!tx.is_active());
+
+    let session = MockSession::new(datastore.clone());
+    let mut tx2 = session.begin().await.unwrap();
+    assert!(tx2.is_active());
+    tx2.rollback().await.unwrap();
+    assert!(!tx2.is_active());
+
+    let mut tx3 = session.begin().await.unwrap();
+    tx3.commit().await.unwrap();
+    assert!(!tx3.is_active());
+    let err = tx3.commit().await;
+    assert!(err.is_err());
 }

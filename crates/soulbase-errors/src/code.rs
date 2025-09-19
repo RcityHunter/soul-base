@@ -43,6 +43,8 @@ pub mod codes {
     pub const LLM_CONTEXT_OVERFLOW: ErrorCode = ErrorCode("LLM.CONTEXT_OVERFLOW");
     pub const PROVIDER_UNAVAILABLE: ErrorCode = ErrorCode("PROVIDER.UNAVAILABLE");
     pub const STORAGE_NOT_FOUND: ErrorCode = ErrorCode("STORAGE.NOT_FOUND");
+    pub const STORAGE_CONFLICT: ErrorCode = ErrorCode("STORAGE.CONFLICT");
+    pub const STORAGE_UNAVAILABLE: ErrorCode = ErrorCode("STORAGE.UNAVAILABLE");
     pub const UNKNOWN_INTERNAL: ErrorCode = ErrorCode("UNKNOWN.INTERNAL");
     pub const SANDBOX_PERMISSION_DENY: ErrorCode = ErrorCode("SANDBOX.PERMISSION_DENY");
 }
@@ -161,7 +163,25 @@ pub static REGISTRY: Lazy<HashMap<&'static str, CodeSpec>> = Lazy::new(|| {
         severity: Severity::Info,
         default_user_msg: "Resource not found.",
     });
+    add(CodeSpec {
+        code: STORAGE_CONFLICT,
+        kind: ErrorKind::Conflict,
+        http_status: 409,
+        grpc_status: grpc(10),
+        retryable: RetryClass::Transient,
+        severity: Severity::Warn,
+        default_user_msg: "The resource is currently locked. Please retry.",
+    });
 
+    add(CodeSpec {
+        code: STORAGE_UNAVAILABLE,
+        kind: ErrorKind::Storage,
+        http_status: 503,
+        grpc_status: grpc(14),
+        retryable: RetryClass::Transient,
+        severity: Severity::Error,
+        default_user_msg: "Storage backend is unavailable. Please retry later.",
+    });
     add(CodeSpec {
         code: UNKNOWN_INTERNAL,
         kind: ErrorKind::Unknown,

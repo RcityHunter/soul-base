@@ -1,7 +1,12 @@
+use crate::errors::StorageError;
+use crate::spi::datastore::Datastore;
+use async_trait::async_trait;
 use parking_lot::RwLock;
 use soulbase_types::prelude::TenantId;
 use std::collections::HashMap;
 use std::sync::Arc;
+
+use super::session::MockSession;
 
 #[derive(Clone, Default)]
 pub struct MockDatastore {
@@ -147,5 +152,14 @@ impl MockDatastore {
                 }
             })
             .collect()
+    }
+}
+
+#[async_trait]
+impl Datastore for MockDatastore {
+    type Session = MockSession;
+
+    async fn session(&self) -> Result<Self::Session, StorageError> {
+        Ok(MockSession::new(self.clone()))
     }
 }

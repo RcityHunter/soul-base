@@ -4,18 +4,21 @@ use crate::model::Entity;
 use crate::spi::vector::VectorIndex;
 use async_trait::async_trait;
 use soulbase_types::prelude::TenantId;
+use std::marker::PhantomData;
 
 #[derive(Clone)]
-pub struct InMemoryVector {
+pub struct InMemoryVector<E: Entity> {
     store: MockDatastore,
     table: &'static str,
+    _marker: PhantomData<E>,
 }
 
-impl InMemoryVector {
-    pub fn new<E: Entity>(store: &MockDatastore) -> Self {
+impl<E: Entity> InMemoryVector<E> {
+    pub fn new(store: &MockDatastore) -> Self {
         Self {
             store: store.clone(),
             table: E::TABLE,
+            _marker: PhantomData,
         }
     }
 }
@@ -29,9 +32,9 @@ fn distance(a: &[f32], b: &[f32]) -> f32 {
 }
 
 #[async_trait]
-impl<E> VectorIndex<E> for InMemoryVector
+impl<E> VectorIndex<E> for InMemoryVector<E>
 where
-    E: Entity,
+    E: Entity + Send + Sync,
 {
     async fn upsert_vec(
         &self,

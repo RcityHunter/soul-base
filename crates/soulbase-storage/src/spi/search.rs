@@ -7,10 +7,8 @@ use soulbase_types::prelude::TenantId;
 pub trait SearchStore: Send + Sync {
     async fn search(
         &self,
-        _tenant: &TenantId,
-        _query: &str,
-        _limit: usize,
-    ) -> Result<Page<serde_json::Value>, StorageError> {
-        Err(StorageError::not_found("search not implemented"))
-    }
+        tenant: &TenantId,
+        query: &str,
+        limit: usize,
+    ) -> Result<Page<serde_json::Value>, StorageError>;
 }

@@ -1,7 +1,14 @@
-﻿pub struct QueryBinder;
+#![cfg(feature = "surreal")]
+
+use serde_json::Value;
+
+pub struct QueryBinder;
 
 impl QueryBinder {
-    pub fn bind(_input: &serde_json::Value) -> serde_json::Value {
-        serde_json::json!({})
+    pub fn into_bindings(params: Value) -> Vec<(String, Value)> {
+        match params {
+            Value::Object(map) => map.into_iter().collect(),
+            _ => Vec::new(),
+        }
     }
 }

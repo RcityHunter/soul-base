@@ -1,29 +1,32 @@
-﻿use super::datastore::MockDatastore;
+use super::datastore::MockDatastore;
 use crate::errors::StorageError;
 use crate::model::Entity;
 use crate::spi::graph::GraphStore;
 use async_trait::async_trait;
 use soulbase_types::prelude::TenantId;
+use std::marker::PhantomData;
 
 #[derive(Clone)]
-pub struct InMemoryGraph {
+pub struct InMemoryGraph<E: Entity> {
     store: MockDatastore,
     table: &'static str,
+    _marker: PhantomData<E>,
 }
 
-impl InMemoryGraph {
-    pub fn new<E: Entity>(store: &MockDatastore) -> Self {
+impl<E: Entity> InMemoryGraph<E> {
+    pub fn new(store: &MockDatastore) -> Self {
         Self {
             store: store.clone(),
             table: E::TABLE,
+            _marker: PhantomData,
         }
     }
 }
 
 #[async_trait]
-impl<E> GraphStore<E> for InMemoryGraph
+impl<E> GraphStore<E> for InMemoryGraph<E>
 where
-    E: Entity,
+    E: Entity + Send + Sync,
 {
     async fn relate(
         &self,

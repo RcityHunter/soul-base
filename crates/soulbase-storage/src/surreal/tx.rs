@@ -1,2 +1,91 @@
-﻿#[derive(Clone, Debug, Default)]
-pub struct SurrealTransaction;
+#![cfg(feature = "surreal")]
+
+use super::{binder::QueryBinder, errors::map_surreal_error, observe::record_backend};
+use crate::errors::StorageError;
+use crate::spi::query::QueryExecutor;
+use crate::spi::tx::Transaction;
+use async_trait::async_trait;
+use serde_json::Value;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::Instant;
+use surrealdb::{engine::any::Any, Surreal};
+
+#[derive(Clone)]
+pub struct SurrealTransaction {
+    client: Arc<Surreal<Any>>,
+    active: Arc<AtomicBool>,
+}
+
+impl SurrealTransaction {
+    pub(crate) fn new(client: Arc<Surreal<Any>>) -> Self {
+        Self {
+            client,
+            active: Arc::new(AtomicBool::new(true)),
+        }
+    }
+
+    fn ensure_active(&self) -> Result<(), StorageError> {
+        if self.active.load(Ordering::SeqCst) {
+            Ok(())
+        } else {
+            Err(StorageError::bad_request("transaction already closed"))
+        }
+    }
+
+    fn close(&self) {
+        self.active.store(false, Ordering::SeqCst);
+    }
+}
+
+#[async_trait]
+impl QueryExecutor for SurrealTransaction {
+    async fn query(&self, statement: &str, params: Value) -> Result<Value, StorageError> {
+        self.ensure_active()?;
+        let mut prepared = self.client.query(statement);
+        for (key, value) in QueryBinder::into_bindings(params) {
+            prepared = prepared.bind((key, value));
+        }
+        let started = Instant::now();
+        let mut response = prepared
+            .await
+            .map_err(|err| map_surreal_error(err, "surreal tx query"))?;
+        let rows: Vec<Value> = match response.take(0) {
+            Ok(rows) => rows,
+            Err(err) => return Err(map_surreal_error(err, "surreal tx query read")),
+        };
+        record_backend("surreal.tx.query", started.elapsed(), rows.len(), None);
+        Ok(Value::Array(rows))
+    }
+}
+
+#[async_trait]
+impl Transaction for SurrealTransaction {
+    async fn commit(&mut self) -> Result<(), StorageError> {
+        self.ensure_active()?;
+        let started = Instant::now();
+        self.client
+            .query("COMMIT TRANSACTION")
+            .await
+            .map_err(|err| map_surreal_error(err, "surreal commit"))?;
+        record_backend("surreal.tx.commit", started.elapsed(), 0, None);
+        self.close();
+        Ok(())
+    }
+
+    async fn rollback(&mut self) -> Result<(), StorageError> {
+        self.ensure_active()?;
+        let started = Instant::now();
+        self.client
+            .query("CANCEL TRANSACTION")
+            .await
+            .map_err(|err| map_surreal_error(err, "surreal rollback"))?;
+        record_backend("surreal.tx.rollback", started.elapsed(), 0, None);
+        self.close();
+        Ok(())
+    }
+
+    fn is_active(&self) -> bool {
+        self.active.load(Ordering::SeqCst)
+    }
+}

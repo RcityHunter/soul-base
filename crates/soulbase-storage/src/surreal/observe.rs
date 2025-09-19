@@ -1,11 +1,8 @@
-﻿use std::collections::BTreeMap;
+#![cfg(feature = "surreal")]
 
-pub fn labels(op: &str, code: Option<&str>) -> BTreeMap<&'static str, String> {
-    let mut map = BTreeMap::new();
-    map.insert("backend", "surreal".into());
-    map.insert("operation", op.into());
-    if let Some(c) = code {
-        map.insert("code", c.into());
-    }
-    map
+use crate::observe;
+use std::time::Duration;
+
+pub fn record_backend(op: &'static str, latency: Duration, rows: usize, code: Option<&str>) {
+    observe::record(op, None, Some("surreal"), latency, rows, code);
 }
