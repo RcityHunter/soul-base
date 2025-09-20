@@ -36,7 +36,7 @@ impl Source for EnvSource {
 
             access::set_path(&mut map, &normalized, serde_json::Value::String(value));
             provenance.push(ProvenanceEntry {
-                key: KeyPath(normalized.into()),
+                key: KeyPath(normalized),
                 source_id: self.id().to_string(),
                 layer: Layer::Env,
                 version: None,

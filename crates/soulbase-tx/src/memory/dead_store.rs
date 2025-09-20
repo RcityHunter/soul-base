@@ -7,13 +7,15 @@ use soulbase_types::prelude::TenantId;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+type DeadStoreKey = (String, DeadKind, String);
+
 #[derive(Default, Clone)]
 pub struct InMemoryDeadStore {
-    inner: Arc<RwLock<HashMap<(String, DeadKind, String), DeadLetter>>>,
+    inner: Arc<RwLock<HashMap<DeadStoreKey, DeadLetter>>>,
 }
 
 impl InMemoryDeadStore {
-    fn key(reference: &DeadLetterRef) -> (String, DeadKind, String) {
+    fn key(reference: &DeadLetterRef) -> DeadStoreKey {
         (
             reference.tenant.0.clone(),
             reference.kind.clone(),

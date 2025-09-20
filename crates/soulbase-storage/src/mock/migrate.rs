@@ -1,4 +1,4 @@
-﻿use crate::errors::StorageError;
+use crate::errors::StorageError;
 use crate::spi::migrate::{MigrationScript, Migrator};
 use async_trait::async_trait;
 use parking_lot::RwLock;
@@ -13,6 +13,12 @@ impl InMemoryMigrator {
         Self {
             state: std::sync::Arc::new(RwLock::new("none".to_string())),
         }
+    }
+}
+
+impl Default for InMemoryMigrator {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

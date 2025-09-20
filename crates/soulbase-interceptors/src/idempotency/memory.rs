@@ -16,6 +16,12 @@ impl MemoryIdempotencyStore {
     }
 }
 
+impl Default for MemoryIdempotencyStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[async_trait]
 impl IdempotencyStore for MemoryIdempotencyStore {
     async fn check_or_insert(&self, key: &str) -> Result<bool, InterceptError> {

@@ -35,8 +35,8 @@ impl ProfileBuilder for ProfileBuilderDefault {
         let allowed: Vec<Capability> = manifest
             .permissions
             .iter()
+            .filter(|cap| grant.capabilities.iter().any(|g| g == *cap))
             .cloned()
-            .filter(|cap| grant.capabilities.iter().any(|g| g == cap))
             .collect();
 
         if allowed.is_empty() {

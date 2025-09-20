@@ -128,7 +128,7 @@ async fn fs_read_path_escape_denied() {
         offset: None,
         len: Some(4),
     };
-    let err = guard.validate(&profile, &op).await.err().expect("denied");
+    let err = guard.validate(&profile, &op).await.expect_err("denied");
     let eo = err.into_inner();
     assert_eq!(eo.code.0, "SANDBOX.PERMISSION_DENY");
 }
@@ -157,8 +157,7 @@ async fn budget_calls_exceeded() {
     let err = sandbox
         .run(&profile, &env_id, &evidence, &budget, op)
         .await
-        .err()
-        .expect("budget exceed");
+        .expect_err("budget exceed");
     let eo = err.into_inner();
     assert_eq!(eo.code.0, "QUOTA.BUDGET_EXCEEDED");
 }
@@ -199,7 +198,7 @@ async fn net_whitelist_denied() {
         headers: HashMap::new(),
         body_b64: None,
     };
-    let err = guard.validate(&profile, &op).await.err().expect("blocked");
+    let err = guard.validate(&profile, &op).await.expect_err("blocked");
     let eo = err.into_inner();
     assert_eq!(eo.code.0, "SANDBOX.PERMISSION_DENY");
 }

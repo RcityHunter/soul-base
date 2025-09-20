@@ -28,6 +28,12 @@ impl MemoryEvidence {
     }
 }
 
+impl Default for MemoryEvidence {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct EvidenceRecord {
     pub env_id: Id,

@@ -64,7 +64,7 @@ pub struct Preflight<'a> {
     pub guard: &'a dyn PolicyGuard,
 }
 
-impl<'a> Preflight<'a> {
+impl Preflight<'_> {
     pub async fn run(&self, call: &ToolCall) -> Result<PreflightOutput, ToolError> {
         let spec_opt = self.registry.get(&call.tenant, &call.tool_id).await?;
         let spec = match spec_opt {
@@ -138,10 +138,8 @@ impl<'a> Preflight<'a> {
 
 pub(crate) fn compose_policy(mut base: PolicyConfig, manifest: &ToolManifest) -> PolicyConfig {
     for cap in &manifest.capabilities {
-        if cap.domain == "net.http" {
-            if !base.whitelists.domains.contains(&cap.resource) {
-                base.whitelists.domains.push(cap.resource.clone());
-            }
+        if cap.domain == "net.http" && !base.whitelists.domains.contains(&cap.resource) {
+            base.whitelists.domains.push(cap.resource.clone());
         }
     }
     base
@@ -164,7 +162,7 @@ pub(crate) fn build_grant(manifest: &ToolManifest, call: &ToolCall) -> Grant {
             calls: to_i64(manifest.limits.max_concurrency as u64),
             bytes_in: to_i64(manifest.limits.max_bytes_in),
             bytes_out: to_i64(manifest.limits.max_bytes_out),
-            duration_ms: to_i64(manifest.limits.timeout_ms as u64),
+            duration_ms: to_i64(manifest.limits.timeout_ms),
         },
         decision_key_fingerprint: manifest.fingerprint().to_string(),
     }

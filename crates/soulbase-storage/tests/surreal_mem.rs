@@ -35,7 +35,10 @@ async fn surreal_migrator_tracks_versions() {
     };
 
     assert_eq!(migrator.current_version().await.unwrap(), "none");
-    migrator.apply_up(&[script.clone()]).await.unwrap();
+    migrator
+        .apply_up(std::slice::from_ref(&script))
+        .await
+        .unwrap();
     assert_eq!(migrator.current_version().await.unwrap(), version);
     migrator.apply_down(&[script]).await.unwrap();
     assert_eq!(migrator.current_version().await.unwrap(), "none");

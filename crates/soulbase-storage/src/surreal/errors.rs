@@ -1,5 +1,3 @@
-#![cfg(feature = "surreal")]
-
 use crate::errors::StorageError;
 use surrealdb::Error as SurrealError;
 

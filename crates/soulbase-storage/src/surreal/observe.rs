@@ -1,5 +1,3 @@
-#![cfg(feature = "surreal")]
-
 use crate::observe;
 use std::time::Duration;
 

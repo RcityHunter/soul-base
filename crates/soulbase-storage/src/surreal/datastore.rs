@@ -1,5 +1,3 @@
-#![cfg(feature = "surreal")]
-
 use super::{
     config::SurrealConfig, errors::map_surreal_error, migrate::SurrealMigrator,
     session::SurrealSession,

@@ -49,6 +49,12 @@ impl InMemorySchemaRegistry {
     }
 }
 
+impl Default for InMemorySchemaRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[async_trait::async_trait]
 impl SchemaRegistry for InMemorySchemaRegistry {
     async fn register_namespace(

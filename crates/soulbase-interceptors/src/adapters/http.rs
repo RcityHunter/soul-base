@@ -1,5 +1,3 @@
-#![cfg(feature = "with-axum")]
-
 use crate::context::{InterceptContext, ProtoRequest, ProtoResponse};
 use crate::errors::InterceptError;
 use crate::stages::InterceptorChain;
@@ -7,8 +5,9 @@ use async_trait::async_trait;
 use axum::body::{to_bytes, Body};
 use axum::http::{Request, StatusCode};
 use axum::response::Response;
-use axum::Json;
 use futures::FutureExt;
+use http::header::HeaderName;
+use std::str::FromStr;
 
 pub struct AxumReq<'a> {
     pub req: &'a mut Request<Body>,
@@ -43,14 +42,18 @@ impl ProtoRequest for AxumReq<'_> {
         if let Some(value) = self.cached_json.clone() {
             return Ok(value);
         }
-        let bytes = to_bytes(self.req.body_mut(), 1_048_576)
+
+        let body = std::mem::take(self.req.body_mut());
+        let bytes = to_bytes(body, 1_048_576)
             .await
             .map_err(|e| InterceptError::internal(&format!("read body: {e}")))?;
         if bytes.is_empty() {
+            *self.req.body_mut() = Body::empty();
             return Ok(serde_json::json!({}));
         }
         let value: serde_json::Value = serde_json::from_slice(&bytes)
             .map_err(|e| InterceptError::schema(&format!("json parse: {e}")))?;
+        *self.req.body_mut() = Body::from(bytes.clone());
         self.cached_json = Some(value.clone());
         Ok(value)
     }
@@ -63,8 +66,8 @@ impl ProtoResponse for AxumRes {
     }
 
     fn insert_header(&mut self, name: &str, value: &str) {
-        if let Ok(header_value) = value.parse() {
-            self.headers.insert(name, header_value);
+        if let (Ok(header_name), Ok(header_value)) = (HeaderName::from_str(name), value.parse()) {
+            self.headers.insert(header_name, header_value);
         }
     }
 
@@ -106,7 +109,7 @@ where
                 .body(Body::empty())
                 .unwrap();
             if let Some(body) = pres.body {
-                let bytes = serde_json::to_vec(&Json(body)).unwrap_or_default();
+                let bytes = serde_json::to_vec(&body).unwrap_or_default();
                 *response.body_mut() = Body::from(bytes);
             }
             *response.headers_mut() = pres.headers;

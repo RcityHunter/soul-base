@@ -260,7 +260,7 @@ impl EmbedModel for LocalEmbed {
                 input_tokens: req
                     .items
                     .iter()
-                    .map(|i| (i.text.len() as u32 + 3) / 4)
+                    .map(|i| (i.text.len() as u32).div_ceil(4))
                     .sum(),
                 output_tokens: 0,
                 cached_tokens: None,
@@ -310,7 +310,7 @@ impl RerankModel for LocalRerank {
             scores: scores_sorted,
             ordering,
             usage: Usage {
-                input_tokens: (req.query.len() as u32 + 3) / 4,
+                input_tokens: (req.query.len() as u32).div_ceil(4),
                 output_tokens: 0,
                 cached_tokens: None,
                 image_units: None,
@@ -320,5 +320,11 @@ impl RerankModel for LocalRerank {
             cost: zero_cost(),
             provider_meta: serde_json::json!({ "provider": "local" }),
         })
+    }
+}
+
+impl Default for Registry {
+    fn default() -> Self {
+        Self::new()
     }
 }

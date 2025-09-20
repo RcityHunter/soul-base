@@ -9,7 +9,7 @@ pub struct FsExecutor;
 
 impl FsExecutor {
     pub fn new() -> Self {
-        Self::default()
+        Self
     }
 
     pub async fn execute(

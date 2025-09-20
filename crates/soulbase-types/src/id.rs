@@ -15,11 +15,13 @@ pub struct CausationId(pub String);
 pub struct CorrelationId(pub String);
 
 impl Id {
+    #[cfg(feature = "uuid")]
     pub fn new_random() -> Self {
-        #[cfg(feature = "uuid")]
-        {
-            return Self(uuid::Uuid::new_v4().to_string());
-        }
+        Self(uuid::Uuid::new_v4().to_string())
+    }
+
+    #[cfg(not(feature = "uuid"))]
+    pub fn new_random() -> Self {
         // Non-uuid builds use a simple random suffix. Production can override.
         Self(format!("id_{}", nanoid::nanoid!()))
     }

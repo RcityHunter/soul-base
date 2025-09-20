@@ -4,9 +4,9 @@ use crate::model::{Cost, CostBreakdown, Usage};
 pub fn estimate_usage(texts_in: &[&str], text_out: &str) -> Usage {
     let input_tokens: u32 = texts_in
         .iter()
-        .map(|t| (t.chars().count() as u32 + 3) / 4)
+        .map(|t| (t.chars().count() as u32).div_ceil(4))
         .sum();
-    let output_tokens: u32 = (text_out.chars().count() as u32 + 3) / 4;
+    let output_tokens: u32 = (text_out.chars().count() as u32).div_ceil(4);
     Usage {
         input_tokens,
         output_tokens,

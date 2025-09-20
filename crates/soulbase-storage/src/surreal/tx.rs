@@ -1,5 +1,3 @@
-#![cfg(feature = "surreal")]
-
 use super::{
     binder::QueryBinder, errors::map_surreal_error, mapper::SurrealMapper, observe::record_backend,
 };

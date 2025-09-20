@@ -1,5 +1,3 @@
-#![cfg(feature = "surreal")]
-
 use super::errors::map_surreal_error;
 use super::observe::record_backend;
 use crate::errors::StorageError;

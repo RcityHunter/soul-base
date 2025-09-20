@@ -148,10 +148,9 @@ async fn resolve_secrets(
                 serde_json::Value::String(s) => {
                     if s.starts_with("secret://") {
                         let uri = s.clone();
-                        for resolver in resolvers {
+                        if let Some(resolver) = resolvers.first() {
                             let resolved = resolver.resolve(&uri).await?;
                             *value = resolved;
-                            break;
                         }
                     }
                 }
