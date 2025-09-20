@@ -1,5 +1,5 @@
 use crate::errors::TxError;
-use crate::model::DeadLetterRef;
+use crate::model::{DeadKind, DeadLetterRef};
 use crate::outbox::{DeadStore, OutboxStore};
 use soulbase_types::prelude::TenantId;
 
@@ -22,14 +22,18 @@ where
     }
 
     pub async fn replay(&self, reference: &DeadLetterRef) -> Result<(), TxError> {
-        let tenant = &reference.tenant;
-        let id = &reference.id;
-        let letter = self.dead.load(tenant, id).await?;
-        if letter.is_none() {
-            return Err(TxError::not_found("dead-letter not found"));
+        if reference.kind != DeadKind::Outbox {
+            return Err(TxError::bad_request(
+                "only outbox dead letters supported for replay",
+            ));
         }
-        self.outbox.requeue(tenant, id).await?;
-        self.dead.delete(tenant, id).await?;
+        let Some(letter) = self.dead.inspect(reference).await? else {
+            return Err(TxError::not_found("dead-letter not found"));
+        };
+        self.outbox
+            .requeue(&reference.tenant, &reference.id)
+            .await?;
+        self.dead.delete(&letter.reference).await?;
         Ok(())
     }
 }
@@ -37,13 +41,13 @@ where
 pub async fn replay_all<S, D>(
     service: &ReplayService<S, D>,
     tenant: &TenantId,
-    ids: &[DeadLetterRef],
+    refs: &[DeadLetterRef],
 ) -> Result<(), TxError>
 where
     S: OutboxStore,
     D: DeadStore,
 {
-    for reference in ids.iter().filter(|r| &r.tenant == tenant) {
+    for reference in refs.iter().filter(|r| &r.tenant == tenant) {
         service.replay(reference).await?;
     }
     Ok(())

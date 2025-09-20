@@ -3,9 +3,10 @@ use soulbase_tx::memory::{
     InMemoryDeadStore, InMemoryIdempoStore, InMemoryOutboxStore, InMemorySagaStore,
 };
 use soulbase_tx::model::{
-    DeadLetter, DeadLetterRef, MsgId, OutboxMessage, SagaDefinition, SagaState, SagaStepDef,
+    DeadKind, DeadLetter, DeadLetterRef, MsgId, OutboxMessage, OutboxStatus, SagaDefinition,
+    SagaState, SagaStepDef,
 };
-use soulbase_tx::outbox::{DeadStore, Dispatcher, OutboxStore, OutboxTransport};
+use soulbase_tx::outbox::{DeadStore, Dispatcher, OutboxStore, Transport};
 use soulbase_tx::prelude::*;
 use soulbase_tx::replay::ReplayService;
 use soulbase_tx::saga::{SagaOrchestrator, SagaParticipant};
@@ -23,8 +24,8 @@ struct MockTransport {
 }
 
 #[async_trait::async_trait]
-impl OutboxTransport for MockTransport {
-    async fn deliver(&self, _tenant: &TenantId, _message: &OutboxMessage) -> Result<(), TxError> {
+impl Transport for MockTransport {
+    async fn send(&self, _topic: &str, _payload: &serde_json::Value) -> Result<(), TxError> {
         if self.fail_first.swap(false, Ordering::SeqCst) {
             Err(TxError::provider_unavailable("fail"))
         } else {
@@ -54,7 +55,8 @@ async fn outbox_dispatcher_flow() {
         delivered: Arc::new(AtomicUsize::new(0)),
     };
 
-    let msg = build_message(&tenant, "msg-1", "channel");
+    let mut msg = build_message(&tenant, "msg-1", "channel");
+    msg.dispatch_key = Some("user-1".into());
     outbox.enqueue(msg).await.unwrap();
 
     let dispatcher = Dispatcher {
@@ -62,10 +64,13 @@ async fn outbox_dispatcher_flow() {
         store: outbox.clone(),
         dead: dead_store.clone(),
         worker_id: "worker-1".into(),
-        max_attempts: 3,
         lease_ms: 200,
         batch: 10,
-        backoff: RetryPolicy::default(),
+        group_by_key: true,
+        backoff: Box::new(RetryPolicy {
+            max_attempts: 2,
+            ..Default::default()
+        }),
     };
 
     dispatcher.tick(&tenant, now_ms()).await.unwrap();
@@ -84,11 +89,12 @@ async fn outbox_dispatcher_flow() {
         .await
         .unwrap();
     assert!(matches!(status, Some(OutboxStatus::Delivered)));
-    assert!(dead_store
-        .load(&tenant, &MsgId("msg-1".into()))
-        .await
-        .unwrap()
-        .is_none());
+    let dead_ref = DeadLetterRef {
+        tenant: tenant.clone(),
+        kind: DeadKind::Outbox,
+        id: MsgId("msg-1".into()),
+    };
+    assert!(dead_store.inspect(&dead_ref).await.unwrap().is_none());
 }
 
 #[tokio::test]
@@ -101,7 +107,7 @@ async fn idempotency_flow() {
         .unwrap();
     assert!(first.is_none());
     store
-        .finish(&tenant, "request-1", "digest-123")
+        .finish(&tenant, "request-1", "hash", "digest-123")
         .await
         .unwrap();
     let replay = store
@@ -109,6 +115,11 @@ async fn idempotency_flow() {
         .await
         .unwrap();
     assert_eq!(replay, Some("digest-123".into()));
+
+    let conflict = store
+        .check_and_put(&tenant, "request-1", "different-hash", 1_000)
+        .await;
+    assert!(matches!(conflict.unwrap_err(), TxError(_)));
 }
 
 #[derive(Clone)]
@@ -195,28 +206,25 @@ async fn dead_letter_replay() {
     let dead = InMemoryDeadStore::default();
     let msg = build_message(&tenant, "msg-dead", "channel");
     outbox.enqueue(msg.clone()).await.unwrap();
-    outbox.dead(&tenant, &msg.id, "error").await.unwrap();
-    dead.push(DeadLetter {
-        reference: DeadLetterRef {
-            tenant: tenant.clone(),
-            id: msg.id.clone(),
-        },
+    outbox.dead_letter(&tenant, &msg.id, "error").await.unwrap();
+    let reference = DeadLetterRef {
+        tenant: tenant.clone(),
+        kind: DeadKind::Outbox,
+        id: msg.id.clone(),
+    };
+    dead.record(DeadLetter {
+        reference: reference.clone(),
         last_error: Some("error".into()),
         stored_at: now_ms(),
+        note: None,
     })
     .await
     .unwrap();
 
     let replay = ReplayService::new(outbox.clone(), dead.clone());
-    replay
-        .replay(&DeadLetterRef {
-            tenant: tenant.clone(),
-            id: msg.id.clone(),
-        })
-        .await
-        .unwrap();
+    replay.replay(&reference).await.unwrap();
 
     let status = outbox.status(&tenant, &msg.id).await.unwrap();
     assert!(matches!(status, Some(OutboxStatus::Pending)));
-    assert!(dead.load(&tenant, &msg.id).await.unwrap().is_none());
+    assert!(dead.inspect(&reference).await.unwrap().is_none());
 }

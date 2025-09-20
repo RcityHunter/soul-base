@@ -1,8 +1,8 @@
-use rand::Rng;
+use rand::{rngs::StdRng, Rng, SeedableRng};
 
-pub trait Backoff: Send + Sync {
-    fn next_delay_ms(&self, attempt: u32) -> i64;
-    fn max_attempts(&self) -> u32;
+pub trait BackoffPolicy: Send + Sync {
+    fn next_after(&self, now_ms: i64, attempts: u32) -> i64;
+    fn allowed(&self, attempts: u32) -> bool;
 }
 
 #[derive(Clone, Debug)]
@@ -26,28 +26,26 @@ impl Default for RetryPolicy {
     }
 }
 
-impl Backoff for RetryPolicy {
-    fn next_delay_ms(&self, attempt: u32) -> i64 {
-        if attempt == 0 {
-            return 0;
+impl BackoffPolicy for RetryPolicy {
+    fn next_after(&self, now_ms: i64, attempts: u32) -> i64 {
+        if attempts == 0 {
+            return now_ms;
         }
-        let exp = (attempt - 1) as f64;
-        let mut delay = (self.base_ms as f64) * self.factor.powf(exp);
-        if delay > self.cap_ms as f64 {
-            delay = self.cap_ms as f64;
-        }
-        if self.jitter > 0.0 {
-            let mut rng = rand::thread_rng();
-            let jitter = rng.gen_range(-(self.jitter)..self.jitter);
-            delay *= 1.0 + jitter;
-            if delay < 0.0 {
-                delay = self.base_ms as f64;
-            }
-        }
-        delay.round() as i64
+        let exponent = (attempts.saturating_sub(1)) as i32;
+        let exp_delay = (self.base_ms as f64) * self.factor.powi(exponent);
+        let capped = exp_delay.min(self.cap_ms as f64);
+        let mut rng = StdRng::from_entropy();
+        let jitter_factor = if self.jitter > 0.0 {
+            let span = self.jitter.abs();
+            1.0 + (rng.gen::<f64>() * 2.0 - 1.0) * span
+        } else {
+            1.0
+        };
+        let candidate = (capped * jitter_factor).max(self.base_ms as f64);
+        now_ms + candidate.round() as i64
     }
 
-    fn max_attempts(&self) -> u32 {
-        self.max_attempts
+    fn allowed(&self, attempts: u32) -> bool {
+        attempts < self.max_attempts
     }
 }

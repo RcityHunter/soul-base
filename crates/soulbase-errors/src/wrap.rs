@@ -1,11 +1,11 @@
 #[cfg(any(feature = "wrap-reqwest", feature = "wrap-sqlx"))]
 use crate::model::{ErrorBuilder, ErrorObj};
 
-#[cfg(feature = "wrap-reqwest")]
-use crate::code::{codes, ErrorCode};
-
-#[cfg(feature = "wrap-sqlx")]
+#[cfg(any(feature = "wrap-reqwest", feature = "wrap-sqlx"))]
 use crate::code::codes;
+
+#[cfg(feature = "wrap-reqwest")]
+use crate::code::ErrorCode;
 
 #[cfg(feature = "wrap-reqwest")]
 impl From<reqwest::Error> for ErrorObj {

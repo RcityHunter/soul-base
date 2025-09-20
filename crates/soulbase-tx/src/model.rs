@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use soulbase_types::prelude::TenantId;
+use soulbase_types::prelude::{Id, TenantId};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct MsgId(pub String);
@@ -24,6 +24,8 @@ pub struct OutboxMessage {
     pub last_error: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
+    pub dispatch_key: Option<String>,
+    pub envelope_id: Option<Id>,
 }
 
 impl OutboxMessage {
@@ -45,13 +47,22 @@ impl OutboxMessage {
             last_error: None,
             created_at: now_ms,
             updated_at: now_ms,
+            dispatch_key: None,
+            envelope_id: None,
         }
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub enum DeadKind {
+    Outbox,
+    Saga,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct DeadLetterRef {
     pub tenant: TenantId,
+    pub kind: DeadKind,
     pub id: MsgId,
 }
 
@@ -60,6 +71,7 @@ pub struct DeadLetter {
     pub reference: DeadLetterRef,
     pub last_error: Option<String>,
     pub stored_at: i64,
+    pub note: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -70,8 +82,19 @@ pub struct IdempoKey {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum IdempoState {
-    InFlight { expires_at: i64 },
-    Completed { digest: String },
+    InFlight {
+        hash: String,
+        expires_at: i64,
+    },
+    Succeeded {
+        hash: String,
+        digest: String,
+    },
+    Failed {
+        hash: String,
+        error: String,
+        expires_at: i64,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

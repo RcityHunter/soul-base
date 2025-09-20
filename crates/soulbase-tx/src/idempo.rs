@@ -13,7 +13,22 @@ pub trait IdempoStore: Send + Sync {
         ttl_ms: i64,
     ) -> Result<Option<String>, TxError>;
 
-    async fn finish(&self, tenant: &TenantId, key: &str, digest: &str) -> Result<(), TxError>;
+    async fn finish(
+        &self,
+        tenant: &TenantId,
+        key: &str,
+        hash: &str,
+        digest: &str,
+    ) -> Result<(), TxError>;
+
+    async fn fail(
+        &self,
+        tenant: &TenantId,
+        key: &str,
+        hash: &str,
+        error: &str,
+        ttl_ms: i64,
+    ) -> Result<(), TxError>;
 
     async fn purge_expired(&self, now_ms: i64) -> Result<(), TxError>;
 }
@@ -27,7 +42,8 @@ pub fn composite_key(tenant: &TenantId, key: &str) -> IdempoKey {
 
 pub fn is_expired(state: &IdempoState, now_ms: i64) -> bool {
     match state {
-        IdempoState::InFlight { expires_at } => *expires_at <= now_ms,
-        IdempoState::Completed { .. } => false,
+        IdempoState::InFlight { expires_at, .. } => *expires_at <= now_ms,
+        IdempoState::Succeeded { .. } => false,
+        IdempoState::Failed { expires_at, .. } => *expires_at <= now_ms,
     }
 }

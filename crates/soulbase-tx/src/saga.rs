@@ -1,4 +1,4 @@
-﻿use crate::errors::TxError;
+use crate::errors::TxError;
 use crate::model::{SagaDefinition, SagaId, SagaInstance, SagaState, SagaStepStatus};
 use crate::util::now_ms;
 use async_trait::async_trait;
@@ -87,11 +87,19 @@ where
                     let mut updated = record.clone();
                     match self.participant.compensate(uri, saga).await {
                         Ok(true) => {
+                            let ts = now_ms();
                             updated.status = SagaStepStatus::Compensated;
                             updated.attempts += 1;
-                            updated.last_updated = now_ms();
+                            updated.last_updated = ts;
                             saga.history[idx] = updated;
-                            saga.updated_at = now_ms();
+                            saga.updated_at = ts;
+                            if saga
+                                .history
+                                .iter()
+                                .all(|r| !matches!(r.status, SagaStepStatus::Executed))
+                            {
+                                saga.state = SagaState::Cancelled;
+                            }
                             self.store.update(saga.clone()).await?;
                         }
                         Ok(false) => {
@@ -105,13 +113,22 @@ where
                         Err(err) => return Err(err),
                     }
                 } else {
+                    let ts = now_ms();
                     saga.history[idx].status = SagaStepStatus::Compensated;
-                    saga.updated_at = now_ms();
+                    saga.updated_at = ts;
+                    if saga
+                        .history
+                        .iter()
+                        .all(|r| !matches!(r.status, SagaStepStatus::Executed))
+                    {
+                        saga.state = SagaState::Cancelled;
+                    }
                     self.store.update(saga.clone()).await?;
                 }
             } else {
+                let ts = now_ms();
                 saga.state = SagaState::Cancelled;
-                saga.updated_at = now_ms();
+                saga.updated_at = ts;
                 self.store.update(saga.clone()).await?;
             }
         } else {

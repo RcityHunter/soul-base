@@ -1,20 +1,22 @@
-﻿# soulbase-tx (RIS)
+# soulbase-tx (RIS)
 
 Reliable transactions for the Soul platform:
 
-- Outbox leasing with retry, dead lettering, and replay hooks
-- Dispatcher abstraction (transport + store + backoff)
-- Idempotency registry for producer/consumer flows
-- Saga orchestrator with execute/compensate lifecycle
-- In-memory backend to support local development and tests
+- Outbox leasing with dispatch-key grouping, configurable backoff, dead-letter recording, and replay/quarantine hooks
+- Dispatcher abstraction (transport + store + backoff policy)
+- Idempotency registry with hash guards, success/failure outcomes, and TTL cleanup
+- Saga orchestrator with execute/compensate lifecycle and deterministic cancellation
+- In-memory backend mirroring the public SPI for local development and tests
 - SurrealDB adapter scaffolding ready for future implementation
 
 ## Build & Test
 
 ```bash
-cargo check
-cargo test
+cargo fmt
+cargo test -p soulbase-tx
 ```
+
+> `cargo clippy --workspace --all-targets --all-features -D warnings` is recommended when the `clippy` component is installed.
 
 ## Next
 
@@ -22,4 +24,3 @@ cargo test
 - Add TX-specific error codes and richer metrics integration
 - Extend Saga orchestration with concurrent branches and QoS budgets
 - Wire dispatcher instrumentation into soulbase-observe and soulbase-qos
-
