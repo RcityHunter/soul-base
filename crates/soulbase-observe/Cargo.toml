@@ -1,0 +1,31 @@
+[package]
+name = "soulbase-observe"
+version = "1.0.0"
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = ["stdout"]
+prometheus = ["dep:prometheus"]
+otlp = []
+logs-http = []
+kafka = []
+stdout = []
+macros = []
+tail-sampling = []
+redaction-advanced = []
+
+[dependencies]
+async-trait = "0.1"
+futures-util = "0.3"
+parking_lot = "0.12"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+thiserror = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+rand = { version = "0.8", features = ["std"] }
+prometheus = { version = "0.13", optional = true }
+
+soulbase-types = { path = "../soulbase-types", version = "1.0.0" }
+soulbase-errors = { path = "../soulbase-errors", version = "1.0.0" }
