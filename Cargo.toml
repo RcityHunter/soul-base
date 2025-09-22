@@ -10,7 +10,7 @@ members = [
     "crates/soulbase-tools",
     "crates/soulbase-storage",
     "crates/soulbase-tx"
-]
+, "crates/soulbase-observe"]
 resolver = "2"
 
 [workspace.package]

@@ -2914,6 +2914,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "prometheus"
+version = "0.13.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3d33c28a30771f7f96db69893f78b857f7450d7e0237e9c8fc6427a81bae7ed1"
+dependencies = [
+ "cfg-if",
+ "fnv",
+ "lazy_static",
+ "memchr",
+ "parking_lot",
+ "protobuf",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "prost"
 version = "0.13.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2921,6 +2936,12 @@ checksum = "2796faa41db3ec313a31f7624d9286acf277b52de526150b7e69f3debf891ee5"
 dependencies = [
  "bytes",
 ]
+
+[[package]]
+name = "protobuf"
+version = "2.28.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "106dd99e98437432fed6519dedecfade6a06a73bb7b2a1e019fdd2bee5778d94"
 
 [[package]]
 name = "psl-types"
@@ -4017,6 +4038,24 @@ dependencies = [
  "soulbase-types",
  "thiserror 1.0.69",
  "tokio",
+]
+
+[[package]]
+name = "soulbase-observe"
+version = "1.0.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "futures-util",
+ "parking_lot",
+ "prometheus",
+ "rand 0.8.5",
+ "serde",
+ "serde_json",
+ "soulbase-errors",
+ "soulbase-types",
+ "thiserror 1.0.69",
+ "tracing",
 ]
 
 [[package]]
