@@ -22,7 +22,7 @@ impl Exporter for StdoutExporter {
         Ok(())
     }
 
-    async fn emit_metric(&self, spec: &MetricSpec, value: f64) -> Result<(), ObserveError> {
+    async fn emit_metric(&self, spec: &'static MetricSpec, value: f64) -> Result<(), ObserveError> {
         println!("metric {} = {}", spec.name, value);
         Ok(())
     }

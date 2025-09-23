@@ -8,7 +8,7 @@ use async_trait::async_trait;
 #[async_trait]
 pub trait Exporter: Send + Sync {
     async fn emit_log(&self, ctx: &ObserveCtx, event: &LogEvent) -> Result<(), ObserveError>;
-    async fn emit_metric(&self, spec: &MetricSpec, value: f64) -> Result<(), ObserveError>;
+    async fn emit_metric(&self, spec: &'static MetricSpec, value: f64) -> Result<(), ObserveError>;
     async fn emit_evidence<T: serde::Serialize + Send + Sync>(
         &self,
         envelope: &EvidenceEnvelope<T>,
@@ -35,7 +35,11 @@ impl Exporter for NoopExporter {
         Ok(())
     }
 
-    async fn emit_metric(&self, _spec: &MetricSpec, _value: f64) -> Result<(), ObserveError> {
+    async fn emit_metric(
+        &self,
+        _spec: &'static MetricSpec,
+        _value: f64,
+    ) -> Result<(), ObserveError> {
         Ok(())
     }
 

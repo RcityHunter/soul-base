@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use parking_lot::Mutex;
-use prometheus::{Counter, Gauge, Histogram, HistogramOpts, Opts, Registry, TextEncoder};
+use prometheus::{Counter, Encoder, Gauge, Histogram, HistogramOpts, Opts, Registry, TextEncoder};
 
 use crate::ctx::ObserveCtx;
 use crate::export::Exporter;
@@ -33,9 +33,8 @@ impl PrometheusExporter {
         if let Some(existing) = guard.get(spec.name) {
             return Ok(existing.clone());
         }
-        let counter = Counter::with_opts(Opts::new(spec.name, spec.help)).map_err(|e| {
-            ObserveError::internal(&format!("prometheus counter opts: {e}"))
-        })?;
+        let counter = Counter::with_opts(Opts::new(spec.name, spec.help))
+            .map_err(|e| ObserveError::internal(&format!("prometheus counter opts: {e}")))?;
         self.registry
             .register(Box::new(counter.clone()))
             .map_err(|e| ObserveError::internal(&format!("prometheus register: {e}")))?;
@@ -48,9 +47,8 @@ impl PrometheusExporter {
         if let Some(existing) = guard.get(spec.name) {
             return Ok(existing.clone());
         }
-        let gauge = Gauge::with_opts(Opts::new(spec.name, spec.help)).map_err(|e| {
-            ObserveError::internal(&format!("prometheus gauge opts: {e}"))
-        })?;
+        let gauge = Gauge::with_opts(Opts::new(spec.name, spec.help))
+            .map_err(|e| ObserveError::internal(&format!("prometheus gauge opts: {e}")))?;
         self.registry
             .register(Box::new(gauge.clone()))
             .map_err(|e| ObserveError::internal(&format!("prometheus register: {e}")))?;
@@ -70,9 +68,8 @@ impl PrometheusExporter {
             .map(|v| *v as f64)
             .collect();
         let opts = HistogramOpts::new(spec.name, spec.help).buckets(buckets);
-        let histogram = Histogram::with_opts(opts).map_err(|e| {
-            ObserveError::internal(&format!("prometheus histogram opts: {e}"))
-        })?;
+        let histogram = Histogram::with_opts(opts)
+            .map_err(|e| ObserveError::internal(&format!("prometheus histogram opts: {e}")))?;
         self.registry
             .register(Box::new(histogram.clone()))
             .map_err(|e| ObserveError::internal(&format!("prometheus register: {e}")))?;
@@ -103,7 +100,7 @@ impl Exporter for PrometheusExporter {
         Ok(())
     }
 
-    async fn emit_metric(&self, spec: &MetricSpec, value: f64) -> Result<(), ObserveError> {
+    async fn emit_metric(&self, spec: &'static MetricSpec, value: f64) -> Result<(), ObserveError> {
         match spec.kind {
             MetricKind::Counter => {
                 let counter = self.ensure_counter(spec)?;

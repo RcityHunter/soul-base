@@ -3965,6 +3965,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "soulbase-cache"
+version = "1.0.0"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "chrono",
+ "lru",
+ "once_cell",
+ "parking_lot",
+ "rand 0.8.5",
+ "serde",
+ "serde_json",
+ "soulbase-errors",
+ "soulbase-observe",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "soulbase-config"
 version = "1.0.0"
 dependencies = [

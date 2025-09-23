@@ -14,7 +14,11 @@ impl Exporter for LogsHttpExporter {
         Ok(())
     }
 
-    async fn emit_metric(&self, _spec: &MetricSpec, _value: f64) -> Result<(), ObserveError> {
+    async fn emit_metric(
+        &self,
+        _spec: &'static MetricSpec,
+        _value: f64,
+    ) -> Result<(), ObserveError> {
         Ok(())
     }
 
