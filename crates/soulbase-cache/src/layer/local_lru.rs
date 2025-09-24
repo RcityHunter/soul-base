@@ -42,6 +42,13 @@ pub struct CacheEntry {
 }
 
 impl CacheEntry {
+    pub fn with_parts(value: Bytes, stored_at_ms: i64, ttl_ms: i64) -> Self {
+        Self {
+            value,
+            stored_at_ms,
+            ttl_ms,
+        }
+    }
     pub fn new(value: Bytes, ttl_ms: i64) -> Self {
         Self {
             value,

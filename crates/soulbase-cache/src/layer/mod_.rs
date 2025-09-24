@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use bytes::Bytes;
 use chrono::Utc;
+use std::time::Instant;
 use tokio::task;
 
 use crate::codec::{Codec, JsonCodec};
@@ -11,9 +12,11 @@ use crate::policy::CachePolicy;
 use crate::r#trait::{Cache, Invalidation, SingleFlight, Stats};
 
 use super::local_lru::{CacheEntry as LocalEntry, LocalLru};
-use super::redis::RedisStub;
+use super::remote::RemoteHandle;
 use super::singleflight::Flight;
 use super::swr;
+#[cfg(feature = "observe")]
+use soulbase_observe::sdk::metrics::Meter;
 
 #[derive(Clone)]
 pub struct TwoTierCache<C = JsonCodec>
@@ -21,7 +24,7 @@ where
     C: Codec + Clone,
 {
     pub local: LocalLru,
-    pub redis: Option<RedisStub>,
+    pub remote: Option<RemoteHandle>,
     pub codec: C,
     pub flight: Flight,
     pub stats: SimpleStats,
@@ -29,10 +32,10 @@ where
 }
 
 impl TwoTierCache<JsonCodec> {
-    pub fn new(local: LocalLru, redis: Option<RedisStub>) -> Self {
+    pub fn new(local: LocalLru, remote: Option<RemoteHandle>) -> Self {
         Self {
             local,
-            redis,
+            remote,
             codec: JsonCodec,
             flight: Flight::default(),
             stats: SimpleStats::default(),
@@ -45,10 +48,10 @@ impl<C> TwoTierCache<C>
 where
     C: Codec + Clone,
 {
-    pub fn with_codec(local: LocalLru, redis: Option<RedisStub>, codec: C) -> Self {
+    pub fn with_codec(local: LocalLru, remote: Option<RemoteHandle>, codec: C) -> Self {
         Self {
             local,
-            redis,
+            remote,
             codec,
             flight: Flight::default(),
             stats: SimpleStats::default(),
@@ -56,12 +59,23 @@ where
         }
     }
 
+    pub fn with_stats(mut self, stats: SimpleStats) -> Self {
+        self.stats = stats;
+        self
+    }
+
+    #[cfg(feature = "observe")]
+    pub fn with_meter(mut self, meter: &dyn Meter) -> Self {
+        self.stats = SimpleStats::with_meter(meter);
+        self
+    }
+
     async fn fetch_entry(&self, key: &CacheKey) -> Option<LocalEntry> {
         if let Some(entry) = self.local.get(key) {
             return Some(entry);
         }
-        if let Some(redis) = &self.redis {
-            if let Ok(Some(entry)) = redis.get(key).await {
+        if let Some(remote) = &self.remote {
+            if let Ok(Some(entry)) = remote.get(key).await {
                 self.local.put(key, entry.clone());
                 return Some(entry);
             }
@@ -77,8 +91,8 @@ where
     ) -> Result<(), CacheError> {
         let entry = LocalEntry::new(bytes.clone(), ttl_ms);
         self.local.put(key, entry.clone());
-        if let Some(redis) = &self.redis {
-            redis.set(key, entry).await?;
+        if let Some(remote) = &self.remote {
+            remote.set(key, entry).await?;
         }
         Ok(())
     }
@@ -146,12 +160,18 @@ where
                     let policy_clone = policy.clone();
                     let future = loader();
                     task::spawn(async move {
+                        cache_clone.stats.record_load();
+                        let started_at = Instant::now();
                         let guard = cache_clone.flight.acquire(&key_clone).await;
                         match future.await {
                             Ok(value) => {
                                 if let Ok(bytes) = cache_clone.encode(&value) {
                                     let ttl = policy_clone.effective_ttl_ms();
                                     let _ = cache_clone.store_entry(&key_clone, bytes, ttl).await;
+                                    let duration_ms =
+                                        started_at.elapsed().as_millis().min(u128::from(u64::MAX))
+                                            as u64;
+                                    cache_clone.stats.observe_load_time(duration_ms);
                                 }
                             }
                             Err(err) => {
@@ -181,6 +201,7 @@ where
         }
 
         self.stats.record_load();
+        let started_at = Instant::now();
         let value = loader().await.inspect_err(|err| {
             self.stats.record_error();
             tracing::debug!(target = "soulbase::cache", "loader error: {err:?}");
@@ -188,14 +209,16 @@ where
         let bytes = self.encode(&value)?;
         let ttl = policy.effective_ttl_ms();
         self.store_entry(key, bytes, ttl).await?;
+        let duration_ms = started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+        self.stats.observe_load_time(duration_ms);
         drop(guard);
         Ok(value)
     }
 
     async fn invalidate(&self, key: &CacheKey) -> Result<(), CacheError> {
         self.local.remove(key);
-        if let Some(redis) = &self.redis {
-            redis.remove(key).await?;
+        if let Some(remote) = &self.remote {
+            remote.remove(key).await?;
         }
         Ok(())
     }

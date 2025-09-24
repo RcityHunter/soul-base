@@ -6,10 +6,11 @@ license.workspace = true
 
 [features]
 default = []
-redis = []
-observe = []
+redis = ["dep:redis"]
+observe = ["soulbase-observe"]
 
 [dependencies]
+redis = { version = "0.25", optional = true, default-features = false, features = ["tokio-comp", "connection-manager"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 async-trait = "0.1"
@@ -29,3 +30,4 @@ soulbase-observe = { path = "../soulbase-observe", version = "1.0.0", optional =
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 serde_json = "1"
+mini-redis = "0.4"

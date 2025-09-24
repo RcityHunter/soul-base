@@ -1,0 +1,33 @@
+[package]
+name = "soulbase-crypto"
+version = "1.0.0"
+edition.workspace = true
+license.workspace = true
+description = "Canonical JSON, digests, Ed25519 JWS, and XChaCha20-Poly1305 for the Soul platform"
+repository = "https://example.com/soul-base"
+
+[features]
+default = ["jws-ed25519", "aead-xchacha"]
+jws-ed25519 = []
+aead-xchacha = []
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+once_cell = "1"
+zeroize = "1"
+getrandom = "0.2"
+sha2 = "0.10"
+blake3 = "1"
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+rand_core = "0.6"
+chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc"] }
+hkdf = "0.12"
+base64 = "0.22"
+
+soulbase-errors = { path = "../soulbase-errors", version = "1.0.0" }
+
+[dev-dependencies]
+rand = "0.8"
+serde_json = "1"
