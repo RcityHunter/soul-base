@@ -7,6 +7,9 @@ pub use crate::aead::xchacha::XChaChaAead;
 pub use crate::canonical::mod_::{Canonicalizer, JsonCanonicalizer};
 pub use crate::digest::mod_::{DefaultDigester, Digest, Digester};
 pub use crate::errors::CryptoError;
+#[cfg(feature = "observe")]
+pub use crate::metrics::spec as metrics_spec;
+pub use crate::metrics::{CryptoMetrics, CryptoMetricsSnapshot};
 #[cfg(feature = "jws-ed25519")]
 pub use crate::sign::jwk::{JwkPrivateKey, JwkPublicKey};
 #[cfg(feature = "jws-ed25519")]

@@ -4360,6 +4360,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "soulbase-errors",
+ "soulbase-observe",
  "thiserror 1.0.69",
  "zeroize",
 ]

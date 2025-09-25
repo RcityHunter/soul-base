@@ -17,6 +17,9 @@ pub use aead::mod_::Aead;
 pub use aead::xchacha::XChaChaAead;
 pub use canonical::mod_::{Canonicalizer, JsonCanonicalizer};
 pub use digest::mod_::{DefaultDigester, Digest, Digester};
+#[cfg(feature = "observe")]
+pub use metrics::spec as metrics_spec;
+pub use metrics::{CryptoMetrics, CryptoMetricsSnapshot};
 #[cfg(feature = "jws-ed25519")]
 pub use sign::keystore::MemoryKeyStore;
 #[cfg(feature = "jws-ed25519")]

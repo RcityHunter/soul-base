@@ -15,7 +15,7 @@ let cano = JsonCanonicalizer::default();
 let payload = serde_json::json!({"b":2,"a":1});
 let canonical = cano.canonical_json(&payload)?;
 
-let dig = DefaultDigester::default().sha256(&canonical);
+let dig = DefaultDigester::default().sha256(&canonical)?;
 
 let ks = MemoryKeyStore::generate("ed25519:tenant:key", 600_000);
 let signer = JwsEd25519Signer { keystore: ks.clone() };
@@ -28,6 +28,17 @@ let nonce = [0u8; 24];
 let ct = XChaChaAead::default().seal(&key, &nonce, b"aad", b"plaintext")?;
 let pt = XChaChaAead::default().open(&key, &nonce, b"aad", &ct)?;
 assert_eq!(pt, b"plaintext");
+```
+
+### Observe integration
+Enable the `observe` feature to publish counters into the Soul observe pipeline:
+```rust
+use soulbase_observe::sdk::metrics::MeterRegistry;
+use soulbase_crypto::prelude::*;
+
+let meter = MeterRegistry::default();
+let metrics = CryptoMetrics::with_meter(&meter);
+metrics.record_digest_ok();
 ```
 
 ## Tests
