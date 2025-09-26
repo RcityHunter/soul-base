@@ -9,8 +9,11 @@ mod real {
     };
     use crate::r#trait::BlobStore;
     use async_trait::async_trait;
-    use aws_sdk_s3::presigning::config::PresigningConfig;
-    use aws_sdk_s3::types::{ByteStream, ServerSideEncryption};
+    use aws_sdk_s3::operation::get_object::builders::GetObjectFluentBuilder;
+    use aws_sdk_s3::operation::put_object::builders::PutObjectFluentBuilder;
+    use aws_sdk_s3::presigning::PresigningConfig;
+    use aws_sdk_s3::primitives::ByteStream;
+    use aws_sdk_s3::types::ServerSideEncryption;
     use aws_sdk_s3::Client;
     use bytes::Bytes;
     use chrono::Utc;
@@ -119,7 +122,7 @@ mod real {
 
         async fn presign_get_uri(
             &self,
-            request: aws_sdk_s3::client::fluent_builders::GetObject,
+            request: GetObjectFluentBuilder,
             expire_secs: u32,
         ) -> Result<String, BlobError> {
             let config =
@@ -133,7 +136,7 @@ mod real {
 
         async fn presign_put_uri(
             &self,
-            request: aws_sdk_s3::client::fluent_builders::PutObject,
+            request: PutObjectFluentBuilder,
             expire_secs: u32,
         ) -> Result<String, BlobError> {
             let config =
@@ -174,8 +177,11 @@ mod real {
                 .bucket(bucket)
                 .key(full_key)
                 .body(ByteStream::from(body.clone().to_vec()))
-                .content_type(content_type.clone())
-                .metadata(metadata);
+                .content_type(content_type.clone());
+
+            for (k, v) in metadata {
+                request = request.metadata(k, v);
+            }
 
             if let Some(tagging) = Self::serialize_tags(&opts.user_tags) {
                 request = request.tagging(tagging);
