@@ -1,0 +1,42 @@
+[package]
+name = "soulbase-blob"
+version = "1.0.0"
+edition.workspace = true
+license.workspace = true
+description = "Objects & artifacts store (FS + S3 placeholder) for the Soul platform"
+repository = "https://example.com/soul-base"
+
+[features]
+default = ["backend-fs"]
+backend-fs = []
+backend-s3 = ["dep:aws-sdk-s3"]
+kms = []
+observe = []
+qos = []
+s3-test-suite = ["backend-s3", "dep:aws-config"]
+
+[dependencies]
+tokio = { version = "1", features = ["time"] }
+async-trait = "0.1"
+aws-config = { version = "1", optional = true, default-features = false, features = ["behavior-version-latest", "rt-tokio", "rustls"] }
+aws-sdk-s3 = { version = "1", optional = true, default-features = false, features = ["behavior-version-latest", "rt-tokio", "rustls"] }
+base64 = "0.22"
+bytes = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+futures-core = "0.3"
+futures-util = { version = "0.3", default-features = false, features = ["alloc"] }
+hmac = "0.12"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "1"
+urlencoding = "2.1"
+
+soulbase-errors = { path = "../soulbase-errors", version = "1.0.0" }
+soulbase-crypto = { path = "../soulbase-crypto", version = "1.0.0" }
+
+[dev-dependencies]
+bytes = "1"
+tempfile = "3"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "fs"] }
+url = "2"
