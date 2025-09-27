@@ -1,6 +1,6 @@
 use crate::{
     access,
-    errors::ConfigError,
+    errors::{self, ConfigError},
     model::{ConfigMap, KeyPath, Layer, ProvenanceEntry, SnapshotVersion},
     schema::SchemaRegistry,
     secrets::SecretResolver,
@@ -145,13 +145,9 @@ async fn resolve_secrets(
     ) -> BoxFuture<'a, Result<(), ConfigError>> {
         async move {
             match value {
-                serde_json::Value::String(s) => {
-                    if s.starts_with("secret://") {
-                        let uri = s.clone();
-                        if let Some(resolver) = resolvers.first() {
-                            let resolved = resolver.resolve(&uri).await?;
-                            *value = resolved;
-                        }
+                serde_json::Value::String(raw) => {
+                    if let Some(resolved) = maybe_resolve_secret(raw, resolvers).await? {
+                        *value = resolved;
                     }
                 }
                 serde_json::Value::Object(map) => {
@@ -169,6 +165,59 @@ async fn resolve_secrets(
             Ok(())
         }
         .boxed()
+    }
+
+    fn resolver_hint(uri: &str) -> Option<&str> {
+        let rest = uri.strip_prefix("secret://")?;
+        let (candidate, _) = rest.split_once('/')?;
+        if candidate.is_empty() {
+            None
+        } else {
+            Some(candidate)
+        }
+    }
+
+    async fn maybe_resolve_secret(
+        candidate: &str,
+        resolvers: &[Arc<dyn SecretResolver>],
+    ) -> Result<Option<serde_json::Value>, ConfigError> {
+        if !candidate.starts_with("secret://") {
+            return Ok(None);
+        }
+
+        let hint = resolver_hint(candidate);
+        let targets: Vec<&Arc<dyn SecretResolver>> = match hint {
+            Some(id) => {
+                let resolver = resolvers.iter().find(|resolver| resolver.id() == id);
+                match resolver {
+                    Some(r) => vec![r],
+                    None => {
+                        return Err(errors::schema_invalid(
+                            "secret",
+                            &format!("resolver '{id}' not configured"),
+                        ));
+                    }
+                }
+            }
+            None => resolvers.iter().collect::<Vec<_>>(),
+        };
+
+        let mut last_err: Option<ConfigError> = None;
+        for resolver in targets {
+            match resolver.resolve(candidate).await {
+                Ok(value) => return Ok(Some(value)),
+                Err(err) => {
+                    last_err = Some(err);
+                }
+            }
+        }
+
+        Err(last_err.unwrap_or_else(|| {
+            errors::schema_invalid(
+                "secret",
+                &format!("no resolver handled uri (hint: {:?})", hint),
+            )
+        }))
     }
 
     let mut root = serde_json::Value::Object(std::mem::take(map));
