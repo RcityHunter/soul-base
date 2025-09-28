@@ -46,3 +46,27 @@ metrics.record_request();
 - HTTP/3, mTLS, and SWR/cache hooks
 - Advanced routing, DNS policy sync, proxy auth
 ```
+
+## Observability
+
+With the  feature you can wire  directly into
+:
+
+
+
+## Observability
+
+With the `observe-prometheus` feature you can wire `NetMetrics` directly into
+`PrometheusHub`:
+
+```rust
+use soulbase_net::metrics::NetMetrics;
+use soulbase_observe::sdk::PrometheusHub;
+
+let hub = PrometheusHub::new();
+let metrics = NetMetrics::with_prometheus_hub(&hub);
+metrics.record_request();
+metrics.record_retry();
+metrics.record_failure();
+println!("{}", hub.gather().unwrap());
+```

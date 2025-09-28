@@ -17,6 +17,8 @@ use super::singleflight::Flight;
 use super::swr;
 #[cfg(feature = "observe")]
 use soulbase_observe::sdk::metrics::Meter;
+#[cfg(feature = "observe-prometheus")]
+use soulbase_observe::sdk::PrometheusHub;
 
 #[derive(Clone)]
 pub struct TwoTierCache<C = JsonCodec>
@@ -67,6 +69,13 @@ where
     #[cfg(feature = "observe")]
     pub fn with_meter(mut self, meter: &dyn Meter) -> Self {
         self.stats = SimpleStats::with_meter(meter);
+        self
+    }
+
+    #[cfg(feature = "observe-prometheus")]
+    pub fn with_prometheus_hub(mut self, hub: &PrometheusHub) -> Self {
+        let meter = hub.meter();
+        self.stats = SimpleStats::with_meter(&meter);
         self
     }
 

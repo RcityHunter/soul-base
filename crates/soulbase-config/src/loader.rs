@@ -6,12 +6,17 @@ use crate::{
     secrets::SecretResolver,
     snapshot::ConfigSnapshot,
     source::Source,
+    switch::SnapshotSwitch,
     validate::Validator,
+    watch::ChangeNotice,
 };
 use chrono::Utc;
 use futures::future::BoxFuture;
-use futures::FutureExt;
+use futures::future::FutureExt;
+use futures::StreamExt;
 use std::sync::Arc;
+use tokio::sync::oneshot;
+use tokio::task::JoinHandle;
 
 pub struct Loader {
     pub sources: Vec<Arc<dyn Source>>,
@@ -21,6 +26,56 @@ pub struct Loader {
 }
 
 impl Loader {
+    pub async fn load_and_watch(
+        self: Arc<Self>,
+    ) -> Result<(Arc<SnapshotSwitch>, WatchGuard), ConfigError> {
+        let initial = Arc::new(self.load_once().await?);
+        let switch = Arc::new(SnapshotSwitch::new(initial.clone()));
+
+        let (tx, rx) = futures::channel::mpsc::channel::<ChangeNotice>(32);
+
+        for source in &self.sources {
+            if source.supports_watch() {
+                source.watch(tx.clone()).await?;
+            }
+        }
+
+        drop(tx);
+
+        let (stop_tx, stop_rx) = oneshot::channel::<()>();
+        let loader = self.clone();
+        let switch_arc = switch.clone();
+        let mut stop = stop_rx.fuse();
+        let mut rx_stream = rx.fuse();
+        let task = tokio::spawn(async move {
+            loop {
+                futures::select! {
+                    _ = stop => break,
+                    notice = rx_stream.next() => {
+                        let Some(_notice) = notice else {
+                            break;
+                        };
+                        match loader.load_once().await {
+                            Ok(snapshot) => {
+                                switch_arc.swap(Arc::new(snapshot));
+                            }
+                            Err(err) => {
+                                tracing::warn!(target = "soulbase::config", "watch reload failed: {err:?}");
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        Ok((
+            switch,
+            WatchGuard {
+                cancel: Some(stop_tx),
+                task: Some(task),
+            },
+        ))
+    }
     pub async fn load_once(&self) -> Result<ConfigSnapshot, ConfigError> {
         let (mut map, mut provenance) = collect_defaults(&self.registry).await;
 
@@ -81,6 +136,33 @@ impl Loader {
             provenance,
             reload_policy,
         ))
+    }
+}
+
+pub struct WatchGuard {
+    cancel: Option<oneshot::Sender<()>>,
+    task: Option<JoinHandle<()>>,
+}
+
+impl WatchGuard {
+    pub async fn shutdown(mut self) {
+        if let Some(cancel) = self.cancel.take() {
+            let _ = cancel.send(());
+        }
+        if let Some(task) = self.task.take() {
+            let _ = task.await;
+        }
+    }
+}
+
+impl Drop for WatchGuard {
+    fn drop(&mut self) {
+        if let Some(cancel) = self.cancel.take() {
+            let _ = cancel.send(());
+        }
+        if let Some(task) = self.task.take() {
+            task.abort();
+        }
     }
 }
 

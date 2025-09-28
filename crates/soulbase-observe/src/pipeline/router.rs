@@ -16,7 +16,7 @@ pub trait ObserveRouter: Send + Sync {
         T: serde::Serialize;
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct BroadcastRouter;
 
 impl ObserveRouter for BroadcastRouter {

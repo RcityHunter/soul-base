@@ -9,6 +9,7 @@ repository = "https://example.com/soul-base"
 [features]
 default = []
 observe = ["dep:soulbase-observe"]
+observe-prometheus = ["observe", "soulbase-observe/prometheus"]
 
 [dependencies]
 rand = "0.8"

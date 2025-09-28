@@ -8,6 +8,7 @@ license.workspace = true
 default = []
 redis = ["dep:redis"]
 observe = ["soulbase-observe"]
+observe-prometheus = ["observe", "soulbase-observe/prometheus"]
 
 [dependencies]
 redis = { version = "0.25", optional = true, default-features = false, features = ["tokio-comp", "connection-manager"] }

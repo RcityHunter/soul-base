@@ -40,8 +40,37 @@ async fn with_redis() -> Result<(), CacheError> {
 }
 ```
 
+## Observability
+
+With the `observe-prometheus` feature, you can hook cache stats directly into
+`PrometheusHub`:
+
+```rust
+use soulbase_cache::prelude::*;
+use soulbase_observe::sdk::PrometheusHub;
+
+#[tokio::main]
+async fn main() -> Result<(), CacheError> {
+    let hub = PrometheusHub::new();
+    let cache = TwoTierCache::new(LocalLru::new(1_000), None)
+        .with_prometheus_hub(&hub);
+
+    let key = build_key(KeyParts::new("tenant", "demo", "payload"));
+    let policy = CachePolicy::default();
+
+    cache
+        .get_or_load(&key, &policy, || async { Ok::<_, CacheError>("value".to_string()) })
+        .await?;
+    cache.get::<String>(&key).await?;
+
+    println!("{}", hub.gather().unwrap());
+    Ok(())
+}
+```
+
 ## Tests
 ```bash
 cargo test -p soulbase-cache
 cargo test -p soulbase-cache --features redis
+cargo test -p soulbase-cache --features observe-prometheus
 ```

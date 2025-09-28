@@ -77,6 +77,28 @@ impl PrometheusExporter {
         Ok(histogram)
     }
 
+    pub fn inc_counter(&self, spec: &'static MetricSpec, value: u64) -> Result<(), ObserveError> {
+        let counter = self.ensure_counter(spec)?;
+        counter.inc_by(value as f64);
+        Ok(())
+    }
+
+    pub fn set_gauge(&self, spec: &'static MetricSpec, value: u64) -> Result<(), ObserveError> {
+        let gauge = self.ensure_gauge(spec)?;
+        gauge.set(value as f64);
+        Ok(())
+    }
+
+    pub fn observe_histogram(
+        &self,
+        spec: &'static MetricSpec,
+        value: u64,
+    ) -> Result<(), ObserveError> {
+        let histogram = self.ensure_histogram(spec)?;
+        histogram.observe(value as f64);
+        Ok(())
+    }
+
     pub fn gather(&self) -> Result<String, ObserveError> {
         let metric_families = self.registry.gather();
         let mut buffer = Vec::new();

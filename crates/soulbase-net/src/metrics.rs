@@ -2,9 +2,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 #[cfg(feature = "observe")]
-use soulbase_observe::model::{MetricKind, MetricSpec};
-#[cfg(feature = "observe")]
 use soulbase_observe::sdk::metrics::{CounterHandle, Meter};
+#[cfg(feature = "observe-prometheus")]
+use soulbase_observe::sdk::PrometheusHub;
 
 #[cfg(feature = "observe")]
 pub mod spec {
@@ -85,6 +85,12 @@ impl NetMetrics {
             inner: Arc::new(Inner::default()),
             observed: Some(ObservedHandles::new(meter)),
         }
+    }
+
+    #[cfg(feature = "observe-prometheus")]
+    pub fn with_prometheus_hub(hub: &PrometheusHub) -> Self {
+        let meter = hub.meter();
+        Self::with_meter(&meter)
     }
 
     pub fn record_request(&self) {
