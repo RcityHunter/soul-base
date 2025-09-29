@@ -11,11 +11,13 @@ cargo test
 ## Example
 - File + Env + CLI layered merge
 - Remote key-value + in-memory sources with hot reload
-- Secret resolvers with caching / resolver hints
-- Basic validator
+- Secret resolvers (env / file / kv) with caching, TTLs, and resolver hints
+- Schema-aware validator enforcing reload classes (BootOnly vs. hot reload)
 
 ```rust
 use futures::FutureExt;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use soulbase_config::access;
 use soulbase_config::prelude::*;
 use soulbase_config::source::{memory::MemorySource, remote::RemoteSource, Source};
@@ -24,6 +26,12 @@ use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> Result<(), ConfigError> {
+    #[derive(Debug, Serialize, Deserialize, JsonSchema)]
+    struct AppSettings {
+        name: String,
+        version: String,
+    }
+
     let memory = Arc::new(MemorySource::new("memory"));
     memory.set("app.name", serde_json::Value::String("Soulseed".into()));
 
@@ -65,11 +73,30 @@ async fn main() -> Result<(), ConfigError> {
     #[cfg(feature = "remote_http")]
     sources.push(http_remote.clone());
 
+    let registry = Arc::new(InMemorySchemaRegistry::new());
+    register_namespace_struct::<AppSettings>(
+        &registry,
+        NamespaceId::new("app"),
+        vec![
+            (
+                KeyPath::new("app.name"),
+                FieldMeta::new(ReloadClass::BootOnly).with_description("Display name"),
+            ),
+            (
+                KeyPath::new("app.version"),
+                FieldMeta::new(ReloadClass::HotReloadSafe)
+                    .with_default(serde_json::json!("1"))
+                    .with_description("Config version"),
+            ),
+        ],
+    )
+    .await?;
+    let validator = Arc::new(SchemaValidator::new(registry.clone()));
     let loader = Arc::new(Loader {
         sources,
-        secrets: vec![Arc::new(NoopSecretResolver) as Arc<dyn SecretResolver>],
-        validator: Arc::new(BasicValidator),
-        registry: Arc::new(InMemorySchemaRegistry::new()),
+        secrets: vec![Arc::new(EnvSecretResolver::new()) as Arc<dyn SecretResolver>],
+        validator,
+        registry,
     });
 
     let (switch, guard) = loader.clone().load_and_watch().await?;

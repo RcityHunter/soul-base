@@ -1,11 +1,19 @@
+use parking_lot::Mutex;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use soulbase_config::access;
 use soulbase_config::errors::schema_invalid;
 use soulbase_config::prelude::*;
-use soulbase_config::secrets::CachingResolver;
+use soulbase_config::secrets::{
+    CachingResolver, EnvSecretResolver, FileSecretResolver, KvSecretResolver, SecretResolver,
+};
 use soulbase_config::source::{cli::CliArgsSource, env::EnvSource, file::FileSource};
+use std::collections::HashMap;
+use std::env;
+use std::fs;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[test]
 fn load_minimal_snapshot_and_read() {
@@ -214,4 +222,121 @@ fn caching_resolver_reuses_until_expiry() {
         assert_ne!(third, first);
         assert_eq!(counter.load(Ordering::SeqCst), 2);
     });
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn namespace_registration_applies_defaults_and_validation() {
+    #[derive(Debug, Serialize, Deserialize, JsonSchema)]
+    struct AppCfg {
+        limit: u32,
+        secret: String,
+    }
+
+    let registry = Arc::new(InMemorySchemaRegistry::new());
+    register_namespace_struct::<AppCfg, _>(
+        &*registry,
+        NamespaceId::new("app"),
+        vec![
+            (
+                KeyPath::new("app.limit"),
+                FieldMeta::new(ReloadClass::HotReloadSafe)
+                    .with_default(serde_json::json!(5))
+                    .with_description("Request limit"),
+            ),
+            (
+                KeyPath::new("app.secret"),
+                FieldMeta::new(ReloadClass::BootOnly)
+                    .mark_sensitive()
+                    .with_default(serde_json::json!("changeme"))
+                    .with_description("Shared secret"),
+            ),
+        ],
+    )
+    .await
+    .expect("register namespace");
+
+    let validator = Arc::new(SchemaValidator::new(registry.clone())) as Arc<dyn Validator>;
+    let loader = Arc::new(Loader {
+        sources: vec![Arc::new(MemorySource::new("memory")) as Arc<dyn Source>],
+        secrets: vec![Arc::new(NoopSecretResolver) as Arc<dyn SecretResolver>],
+        validator,
+        registry,
+    });
+
+    let snapshot = loader.load_once().await.expect("snapshot");
+    let limit: u32 = snapshot
+        .get(&KeyPath::new("app.limit"))
+        .expect("default limit");
+    assert_eq!(limit, 5);
+
+    let err = loader
+        .load_with(serde_json::json!({"app": {"limit": "oops"}}))
+        .await
+        .expect_err("invalid override");
+    let error = err.into_inner();
+    let dev_msg = error.message_dev.expect("dev message");
+    assert!(dev_msg.contains("namespace 'app'"));
+}
+
+#[test]
+fn env_secret_resolver_reads_env() {
+    env::set_var("SB_CONF_SECRET", "super-secret");
+    let resolver = EnvSecretResolver::new();
+    let runtime = tokio::runtime::Runtime::new().expect("runtime");
+    let value = runtime
+        .block_on(async { resolver.resolve("secret://env/SB_CONF_SECRET").await })
+        .expect("env secret");
+    assert_eq!(value, serde_json::Value::String("super-secret".into()));
+    env::remove_var("SB_CONF_SECRET");
+}
+
+#[test]
+fn file_secret_resolver_reads_file() {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("timestamp")
+        .as_micros();
+    let path = env::temp_dir().join(format!("soulbase_secret_{timestamp}.txt"));
+    fs::write(
+        &path,
+        "on-disk-secret
+",
+    )
+    .expect("write secret");
+
+    let resolver = FileSecretResolver::new();
+    let runtime = tokio::runtime::Runtime::new().expect("runtime");
+    let uri = format!("secret://file/{}", path.to_string_lossy());
+    let value = runtime
+        .block_on(async { resolver.resolve(&uri).await })
+        .expect("file secret");
+    assert_eq!(value, serde_json::Value::String("on-disk-secret".into()));
+
+    let _ = fs::remove_file(&path);
+}
+
+#[test]
+fn kv_secret_resolver_reads_from_store() {
+    let store = Arc::new(Mutex::new(HashMap::new()));
+    {
+        let mut guard = store.lock();
+        guard.insert(
+            "api".to_string(),
+            serde_json::Value::String("token-123".into()),
+        );
+    }
+
+    let resolver = KvSecretResolver::new("kv", {
+        let store = store.clone();
+        move |key: String| {
+            let store = store.clone();
+            async move { Ok(store.lock().get(&key).cloned()) }
+        }
+    });
+
+    let runtime = tokio::runtime::Runtime::new().expect("runtime");
+    let value = runtime
+        .block_on(async { resolver.resolve("secret://kv/api").await })
+        .expect("kv secret");
+    assert_eq!(value, serde_json::Value::String("token-123".into()));
 }

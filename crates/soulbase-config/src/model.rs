@@ -3,10 +3,20 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct NamespaceId(pub String);
 
+impl NamespaceId {
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct KeyPath(pub String);
 
 impl KeyPath {
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
     pub fn segments(&self) -> impl Iterator<Item = &str> {
         self.0.split('.')
     }

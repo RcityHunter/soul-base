@@ -9,7 +9,7 @@ repository = "https://github.com/RcityHunter/soul-base"
 [features]
 default = ["memory"]
 memory = []
-surreal = []
+surreal = ["dep:soulbase-storage"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -21,9 +21,11 @@ chrono = "0.4"
 rand = "0.8"
 futures-util = "0.3"
 tracing = "0.1"
+sha2 = "0.10"
 
 soulbase-types = { path = "../soulbase-types", version = "1.0.0" }
 soulbase-errors = { path = "../soulbase-errors", version = "1.0.0" }
+soulbase-storage = { path = "../soulbase-storage", version = "1.0.0", optional = true, features = ["surreal"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }

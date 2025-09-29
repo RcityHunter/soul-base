@@ -17,6 +17,37 @@ pub struct FieldMeta {
     pub description: Option<String>,
 }
 
+impl FieldMeta {
+    pub fn new(reload: ReloadClass) -> Self {
+        Self {
+            reload,
+            sensitive: false,
+            default_value: None,
+            description: None,
+        }
+    }
+
+    pub fn mark_sensitive(mut self) -> Self {
+        self.sensitive = true;
+        self
+    }
+
+    pub fn with_sensitive(mut self, sensitive: bool) -> Self {
+        self.sensitive = sensitive;
+        self
+    }
+
+    pub fn with_default(mut self, value: serde_json::Value) -> Self {
+        self.default_value = Some(value);
+        self
+    }
+
+    pub fn with_description(mut self, description: impl Into<String>) -> Self {
+        self.description = Some(description.into());
+        self
+    }
+}
+
 #[derive(Clone)]
 pub struct NamespaceView {
     pub json_schema: RootSchema,
@@ -84,4 +115,21 @@ impl SchemaRegistry for InMemorySchemaRegistry {
             .map(|(name, view)| (NamespaceId(name.clone()), view.clone()))
             .collect()
     }
+}
+
+#[cfg(feature = "schema_json")]
+pub async fn register_namespace_struct<T, R>(
+    registry: &R,
+    namespace: NamespaceId,
+    field_meta: impl IntoIterator<Item = (KeyPath, FieldMeta)>,
+) -> Result<(), ConfigError>
+where
+    T: schemars::JsonSchema,
+    R: SchemaRegistry + ?Sized,
+{
+    let root_schema = schemars::gen::SchemaGenerator::default().into_root_schema_for::<T>();
+    let field_meta = field_meta.into_iter().collect::<HashMap<_, _>>();
+    registry
+        .register_namespace(&namespace, root_schema, field_meta)
+        .await
 }

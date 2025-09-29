@@ -55,12 +55,16 @@ impl Loader {
                         let Some(_notice) = notice else {
                             break;
                         };
-                        match loader.load_once().await {
+                        let current = switch_arc.get();
+                        match loader.load_next(&current).await {
                             Ok(snapshot) => {
                                 switch_arc.swap(Arc::new(snapshot));
                             }
                             Err(err) => {
-                                tracing::warn!(target = "soulbase::config", "watch reload failed: {err:?}");
+                                tracing::warn!(
+                                    target = "soulbase::config",
+                                    "watch reload rejected: {err:?}; keeping last snapshot",
+                                );
                             }
                         }
                     }
@@ -77,16 +81,7 @@ impl Loader {
         ))
     }
     pub async fn load_once(&self) -> Result<ConfigSnapshot, ConfigError> {
-        let (mut map, mut provenance) = collect_defaults(&self.registry).await;
-
-        for source in &self.sources {
-            let snapshot = source.load().await?;
-            merge_into(&mut map, snapshot.map);
-            provenance.extend(snapshot.provenance);
-        }
-
-        resolve_secrets(&mut map, &self.secrets).await?;
-
+        let (map, provenance) = self.materialize().await?;
         let tree = serde_json::Value::Object(map);
         self.validator.validate_boot(&tree).await?;
 
@@ -95,6 +90,20 @@ impl Loader {
             SnapshotVersion("v1".into()),
             provenance,
             None,
+        ))
+    }
+
+    pub async fn load_next(&self, current: &ConfigSnapshot) -> Result<ConfigSnapshot, ConfigError> {
+        let (map, provenance) = self.materialize().await?;
+        let tree = serde_json::Value::Object(map);
+        self.validator.validate_delta(current.tree(), &tree).await?;
+        let reload_policy = current.reload_policy().map(|s| s.to_string());
+
+        Ok(ConfigSnapshot::from_tree(
+            tree,
+            SnapshotVersion("v1".into()),
+            provenance,
+            reload_policy,
         ))
     }
 
@@ -128,6 +137,7 @@ impl Loader {
             });
         }
 
+        self.validator.validate_delta(base.tree(), &tree).await?;
         self.validator.validate_boot(&tree).await?;
 
         Ok(ConfigSnapshot::from_tree(
@@ -136,6 +146,19 @@ impl Loader {
             provenance,
             reload_policy,
         ))
+    }
+
+    async fn materialize(&self) -> Result<(ConfigMap, Vec<ProvenanceEntry>), ConfigError> {
+        let (mut map, mut provenance) = collect_defaults(&self.registry).await;
+
+        for source in &self.sources {
+            let snapshot = source.load().await?;
+            merge_into(&mut map, snapshot.map);
+            provenance.extend(snapshot.provenance);
+        }
+
+        resolve_secrets(&mut map, &self.secrets).await?;
+        Ok((map, provenance))
     }
 }
 
