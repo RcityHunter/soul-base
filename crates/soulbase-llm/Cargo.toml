@@ -10,6 +10,7 @@ repository = "https://github.com/RcityHunter/soul-base"
 default = []
 schema_json = ["schemars"]
 provider-local = []
+provider-openai = ["dep:reqwest", "dep:async-stream", "dep:tokio"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -19,6 +20,9 @@ thiserror = "1"
 futures-core = "0.3"
 futures-util = "0.3"
 schemars = { version = "0.8", optional = true }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"], optional = true }
+async-stream = { version = "0.3", optional = true }
+tokio = { version = "1", features = ["sync"], optional = true }
 
 # internal crates
 soulbase-types = { path = "../soulbase-types", version = "1.0.0" }
@@ -27,3 +31,4 @@ soulbase-tools = { path = "../soulbase-tools", version = "1.0.0" }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread","macros","time"] }
+wiremock = "0.6"

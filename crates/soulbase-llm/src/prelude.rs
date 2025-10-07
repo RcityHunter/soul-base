@@ -10,4 +10,6 @@ pub use crate::model::{
 pub use crate::provider::{
     LocalProviderFactory, ProviderCaps, ProviderCfg, ProviderFactory, Registry,
 };
+#[cfg(feature = "provider-openai")]
+pub use crate::provider::{OpenAiConfig, OpenAiProviderFactory};
 pub use crate::rerank::{RerankModel, RerankRequest, RerankResponse};

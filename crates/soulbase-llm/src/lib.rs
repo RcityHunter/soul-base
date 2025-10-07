@@ -10,3 +10,5 @@ pub mod provider;
 pub mod rerank;
 
 pub use provider::{LocalProviderFactory, Registry};
+#[cfg(feature = "provider-openai")]
+pub use provider::{OpenAiConfig, OpenAiProviderFactory};

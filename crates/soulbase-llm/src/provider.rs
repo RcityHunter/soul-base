@@ -10,10 +10,16 @@
 use futures_util::stream::{self, StreamExt};
 use std::collections::{BTreeSet, HashMap};
 
-type ChatBoxStream = futures_util::stream::BoxStream<'static, Result<ChatDelta, LlmError>>;
-type DynChatModel = dyn ChatModel<Stream = ChatBoxStream>;
-type DynEmbedModel = dyn EmbedModel;
-type DynRerankModel = dyn RerankModel;
+pub type ChatBoxStream = futures_util::stream::BoxStream<'static, Result<ChatDelta, LlmError>>;
+pub type DynChatModel = dyn ChatModel<Stream = ChatBoxStream>;
+pub type DynEmbedModel = dyn EmbedModel;
+pub type DynRerankModel = dyn RerankModel;
+
+#[cfg(feature = "provider-openai")]
+mod openai;
+
+#[cfg(feature = "provider-openai")]
+pub use openai::{OpenAiConfig, OpenAiProviderFactory};
 
 pub struct ProviderCfg {
     pub name: String,
