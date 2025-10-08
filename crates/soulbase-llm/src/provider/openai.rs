@@ -1,6 +1,10 @@
 #![cfg(feature = "provider-openai")]
 
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use async_stream::try_stream;
 use futures_util::stream::{BoxStream, StreamExt};
@@ -293,6 +297,7 @@ struct ChatCompletionResponse {
 }
 
 #[derive(Deserialize)]
+#[allow(dead_code)]
 struct UsagePayload {
     prompt_tokens: Option<u32>,
     completion_tokens: Option<u32>,
@@ -300,6 +305,7 @@ struct UsagePayload {
 }
 
 #[derive(Deserialize)]
+#[allow(dead_code)]
 struct ChatCompletionChoice {
     index: u32,
     message: InboundMessage,
@@ -346,6 +352,7 @@ struct InboundFunctionCall {
 }
 
 #[derive(Deserialize, Default)]
+#[allow(dead_code)]
 struct StreamChunk {
     #[serde(default)]
     id: Option<String>,
@@ -369,6 +376,7 @@ struct StreamChoice {
 }
 
 #[derive(Deserialize, Default)]
+#[allow(dead_code)]
 struct StreamDelta {
     #[serde(default)]
     role: Option<String>,
@@ -379,6 +387,7 @@ struct StreamDelta {
 }
 
 #[derive(Deserialize, Default)]
+#[allow(dead_code)]
 struct StreamToolCallDelta {
     #[serde(default)]
     index: Option<u32>,
@@ -538,6 +547,8 @@ impl crate::chat::ChatModel for OpenAiChatModel {
             let mut usage_final: Option<Usage> = None;
             let mut finish_final: Option<FinishReason> = None;
             let mut done = false;
+            let started_at = Instant::now();
+            let mut first_token_emitted = false;
 
             while let Some(chunk) = body.next().await {
                 let chunk = chunk
@@ -596,12 +607,14 @@ impl crate::chat::ChatModel for OpenAiChatModel {
 
                             if let Some(content) = choice.delta.content {
                                 aggregated_text.push_str(&content);
+                                let first_token_ms =
+                                    maybe_record_first_token(&mut first_token_emitted, started_at);
                                 yield ChatDelta {
                                     text_delta: Some(content),
                                     tool_call_delta: None,
                                     usage_partial: None,
                                     finish: None,
-                                    first_token_ms: None,
+                                    first_token_ms,
                                 };
                             }
 
@@ -609,12 +622,14 @@ impl crate::chat::ChatModel for OpenAiChatModel {
                                 let index = tool_delta.index.unwrap_or(0);
                                 let state = tool_states.entry(index).or_default();
                                 if let Some(proposal) = state.apply(&tool_delta)? {
+                                    let first_token_ms =
+                                        maybe_record_first_token(&mut first_token_emitted, started_at);
                                     yield ChatDelta {
                                         text_delta: None,
                                         tool_call_delta: Some(proposal),
                                         usage_partial: None,
                                         finish: None,
-                                        first_token_ms: None,
+                                        first_token_ms,
                                     };
                                 }
                             }
@@ -635,12 +650,14 @@ impl crate::chat::ChatModel for OpenAiChatModel {
 
             for state in tool_states.values() {
                 if let Some(proposal) = state.proposal() {
+                    let first_token_ms =
+                        maybe_record_first_token(&mut first_token_emitted, started_at);
                     yield ChatDelta {
                         text_delta: None,
                         tool_call_delta: Some(proposal),
                         usage_partial: None,
                         finish: None,
-                        first_token_ms: None,
+                        first_token_ms,
                     };
                 }
             }
@@ -727,6 +744,16 @@ fn aggregate_text(message: &Message) -> String {
         })
         .collect::<Vec<_>>()
         .join("")
+}
+
+fn maybe_record_first_token(emitted: &mut bool, started_at: Instant) -> Option<u32> {
+    if *emitted {
+        None
+    } else {
+        *emitted = true;
+        let ms = started_at.elapsed().as_millis().min(u128::from(u32::MAX)) as u32;
+        Some(ms)
+    }
 }
 
 fn build_request<'a>(

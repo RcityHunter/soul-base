@@ -1,0 +1,30 @@
+[package]
+name = "soulbase-llm-service"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Thin-Waist LLM HTTP service for Soulbase"
+
+[dependencies]
+axum = { version = "0.7", features = ["macros"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+thiserror = "1"
+futures-util = "0.3"
+futures = "0.3"
+async-stream = "0.3"
+anyhow = "1"
+
+soulbase-llm = { path = "../soulbase-llm" }
+soulbase-config = { path = "../soulbase-config" }
+soulbase-interceptors = { path = "../soulbase-interceptors", features = ["with-axum"] }
+soulbase-observe = { path = "../soulbase-observe" }
+soulbase-auth = { path = "../soulbase-auth" }
+soulbase-errors = { path = "../soulbase-errors" }
+
+[features]
+default = []
+provider-openai = ["soulbase-llm/provider-openai"]
