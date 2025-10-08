@@ -1,5 +1,3 @@
-#![cfg(feature = "provider-openai")]
-
 use futures_util::StreamExt;
 use soulbase_llm::prelude::*;
 use std::error::Error;
@@ -40,6 +38,7 @@ fn build_request(model_id: &str, prompt: &str) -> ChatRequest {
     }
 }
 
+#[cfg(feature = "provider-openai")]
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let api_key = std::env::var("OPENAI_API_KEY")
@@ -114,4 +113,9 @@ impl SegmentExt for ContentSegment {
             _ => None,
         }
     }
+}
+
+#[cfg(not(feature = "provider-openai"))]
+fn main() {
+    eprintln!("Enable the `provider-openai` feature to run this example");
 }

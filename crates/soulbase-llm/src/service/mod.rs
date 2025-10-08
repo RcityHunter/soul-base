@@ -1,4 +1,9 @@
-use std::{convert::Infallible, net::SocketAddr, sync::Arc, time::Instant};
+use std::{
+    convert::Infallible,
+    net::SocketAddr,
+    sync::{Arc, Mutex},
+    time::Instant,
+};
 
 use axum::{
     body::{to_bytes, Body},
@@ -27,6 +32,7 @@ use soulbase_interceptors::adapters::http::{handle_with_chain, AxumReq, AxumRes}
 use soulbase_interceptors::context::InterceptContext;
 use soulbase_interceptors::errors::InterceptError;
 use soulbase_interceptors::prelude::*;
+use soulbase_observe::prelude::{Meter, MeterRegistry, MetricKind, MetricSpec};
 
 use crate::prelude::*;
 use crate::{LocalProviderFactory, Registry};
@@ -38,6 +44,7 @@ pub struct AppState {
     registry: Arc<RwLock<Registry>>,
     policy: StructOutPolicy,
     chain: Arc<InterceptorChain>,
+    meter: MeterRegistry,
 }
 
 #[derive(Deserialize)]
@@ -139,6 +146,209 @@ struct ErrorEvent<'a> {
     message: &'a str,
 }
 
+const CHAT_REQUESTS_TOTAL: MetricSpec = MetricSpec {
+    name: "soulbase_llm_chat_requests_total",
+    kind: MetricKind::Counter,
+    help: "Total chat invocations handled by the LLM service",
+    buckets_ms: None,
+    stable_labels: &[],
+};
+
+const CHAT_INPUT_TOKENS_TOTAL: MetricSpec = MetricSpec {
+    name: "soulbase_llm_chat_input_tokens_total",
+    kind: MetricKind::Counter,
+    help: "Total chat input tokens consumed",
+    buckets_ms: None,
+    stable_labels: &[],
+};
+
+const CHAT_OUTPUT_TOKENS_TOTAL: MetricSpec = MetricSpec {
+    name: "soulbase_llm_chat_output_tokens_total",
+    kind: MetricKind::Counter,
+    help: "Total chat output tokens produced",
+    buckets_ms: None,
+    stable_labels: &[],
+};
+
+const EMBED_REQUESTS_TOTAL: MetricSpec = MetricSpec {
+    name: "soulbase_llm_embed_requests_total",
+    kind: MetricKind::Counter,
+    help: "Total embedding invocations handled by the LLM service",
+    buckets_ms: None,
+    stable_labels: &[],
+};
+
+const EMBED_ITEMS_TOTAL: MetricSpec = MetricSpec {
+    name: "soulbase_llm_embed_items_total",
+    kind: MetricKind::Counter,
+    help: "Total embedding items processed",
+    buckets_ms: None,
+    stable_labels: &[],
+};
+
+const EMBED_INPUT_TOKENS_TOTAL: MetricSpec = MetricSpec {
+    name: "soulbase_llm_embed_input_tokens_total",
+    kind: MetricKind::Counter,
+    help: "Total embedding input tokens (estimated)",
+    buckets_ms: None,
+    stable_labels: &[],
+};
+
+const RERANK_REQUESTS_TOTAL: MetricSpec = MetricSpec {
+    name: "soulbase_llm_rerank_requests_total",
+    kind: MetricKind::Counter,
+    help: "Total rerank invocations handled by the LLM service",
+    buckets_ms: None,
+    stable_labels: &[],
+};
+
+const RERANK_INPUT_TOKENS_TOTAL: MetricSpec = MetricSpec {
+    name: "soulbase_llm_rerank_input_tokens_total",
+    kind: MetricKind::Counter,
+    help: "Total rerank input tokens (estimated)",
+    buckets_ms: None,
+    stable_labels: &[],
+};
+
+#[derive(Clone, Default)]
+struct RequestTelemetry {
+    tenant: Option<String>,
+    subject_kind: Option<String>,
+    resource: Option<String>,
+    action: Option<String>,
+}
+
+fn extract_telemetry(ctx: &InterceptContext) -> RequestTelemetry {
+    let tenant = ctx.subject.as_ref().map(|subject| subject.tenant.0.clone());
+    let subject_kind = ctx
+        .subject
+        .as_ref()
+        .map(|subject| format!("{:?}", subject.kind));
+    let resource = ctx
+        .route
+        .as_ref()
+        .map(|route| route.resource.0.clone())
+        .filter(|s| !s.is_empty());
+    let action = ctx
+        .route
+        .as_ref()
+        .map(|route| format!("{:?}", route.action))
+        .filter(|s| !s.is_empty());
+
+    RequestTelemetry {
+        tenant,
+        subject_kind,
+        resource,
+        action,
+    }
+}
+
+fn record_chat_usage(
+    meter: &MeterRegistry,
+    telemetry: &RequestTelemetry,
+    model_id: &str,
+    usage: &Usage,
+    source: &'static str,
+) {
+    let requests = u64::from(usage.requests.max(1));
+    meter.counter(&CHAT_REQUESTS_TOTAL).inc(requests);
+    meter
+        .counter(&CHAT_INPUT_TOKENS_TOTAL)
+        .inc(u64::from(usage.input_tokens));
+    meter
+        .counter(&CHAT_OUTPUT_TOKENS_TOTAL)
+        .inc(u64::from(usage.output_tokens));
+
+    let tenant = telemetry.tenant.as_deref().unwrap_or("unknown");
+    let subject_kind = telemetry.subject_kind.as_deref().unwrap_or("n/a");
+    let resource = telemetry.resource.as_deref().unwrap_or("n/a");
+    let action = telemetry.action.as_deref().unwrap_or("n/a");
+
+    info!(
+        target: "soulbase_llm::usage",
+        kind = "chat",
+        source,
+        tenant,
+        subject_kind,
+        resource,
+        action,
+        model_id,
+        input_tokens = usage.input_tokens,
+        output_tokens = usage.output_tokens,
+        cached_tokens = usage.cached_tokens.unwrap_or(0),
+        requests = usage.requests,
+        "chat usage recorded"
+    );
+}
+
+fn record_embed_usage(
+    meter: &MeterRegistry,
+    telemetry: &RequestTelemetry,
+    model_id: &str,
+    usage: &Usage,
+    item_count: usize,
+) {
+    let requests = u64::from(usage.requests.max(1));
+    meter.counter(&EMBED_REQUESTS_TOTAL).inc(requests);
+    meter.counter(&EMBED_ITEMS_TOTAL).inc(item_count as u64);
+    meter
+        .counter(&EMBED_INPUT_TOKENS_TOTAL)
+        .inc(u64::from(usage.input_tokens));
+
+    let tenant = telemetry.tenant.as_deref().unwrap_or("unknown");
+    let subject_kind = telemetry.subject_kind.as_deref().unwrap_or("n/a");
+    let resource = telemetry.resource.as_deref().unwrap_or("n/a");
+    let action = telemetry.action.as_deref().unwrap_or("n/a");
+
+    info!(
+        target: "soulbase_llm::usage",
+        kind = "embed",
+        tenant,
+        subject_kind,
+        resource,
+        action,
+        model_id,
+        items = item_count,
+        input_tokens = usage.input_tokens,
+        requests = usage.requests,
+        "embed usage recorded"
+    );
+}
+
+fn record_rerank_usage(
+    meter: &MeterRegistry,
+    telemetry: &RequestTelemetry,
+    model_id: &str,
+    usage: &Usage,
+    candidate_count: usize,
+) {
+    let requests = u64::from(usage.requests.max(1));
+    meter.counter(&RERANK_REQUESTS_TOTAL).inc(requests);
+    meter
+        .counter(&RERANK_INPUT_TOKENS_TOTAL)
+        .inc(u64::from(usage.input_tokens));
+
+    let tenant = telemetry.tenant.as_deref().unwrap_or("unknown");
+    let subject_kind = telemetry.subject_kind.as_deref().unwrap_or("n/a");
+    let resource = telemetry.resource.as_deref().unwrap_or("n/a");
+    let action = telemetry.action.as_deref().unwrap_or("n/a");
+
+    info!(
+        target: "soulbase_llm::usage",
+        kind = "rerank",
+        tenant,
+        subject_kind,
+        resource,
+        action,
+        model_id,
+        candidates = candidate_count,
+        input_tokens = usage.input_tokens,
+        output_tokens = usage.output_tokens,
+        requests = usage.requests,
+        "rerank usage recorded"
+    );
+}
+
 pub async fn run() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
@@ -171,21 +381,26 @@ pub fn default_state() -> AppState {
         registry: Arc::new(RwLock::new(registry)),
         policy: StructOutPolicy::StrictReject,
         chain: Arc::new(build_chain()),
+        meter: MeterRegistry::default(),
     }
 }
 
 async fn chat_handler(State(state): State<AppState>, req: Request<Body>) -> Response {
     let registry = state.registry.clone();
     let policy = state.policy.clone();
+    let meter = state.meter.clone();
 
-    handle_with_chain(req, &state.chain, move |_ctx, preq| {
+    handle_with_chain(req, &state.chain, move |ctx, preq| {
         let registry = registry.clone();
         let policy = policy.clone();
+        let meter = meter.clone();
+        let telemetry = extract_telemetry(ctx);
         Box::pin(async move {
             let value = preq.read_json().await?;
             let payload: ChatPayload = serde_json::from_value(value)
                 .map_err(|err| InterceptError::schema(&format!("payload decode: {err}")))?;
             let req = payload.into_request();
+            let model_id = req.model_id.clone();
 
             let model = {
                 let registry_guard = registry.read().await;
@@ -198,6 +413,8 @@ async fn chat_handler(State(state): State<AppState>, req: Request<Body>) -> Resp
                 .await
                 .map_err(|err| InterceptError::from_error(err.into_inner()))?;
 
+            record_chat_usage(&meter, &telemetry, &model_id, &response.usage, "sync");
+
             serde_json::to_value(response)
                 .map_err(|err| InterceptError::internal(&format!("encode response: {err}")))
         })
@@ -207,13 +424,17 @@ async fn chat_handler(State(state): State<AppState>, req: Request<Body>) -> Resp
 
 async fn embed_handler(State(state): State<AppState>, req: Request<Body>) -> Response {
     let registry = state.registry.clone();
+    let meter = state.meter.clone();
 
-    handle_with_chain(req, &state.chain, move |_ctx, preq| {
+    handle_with_chain(req, &state.chain, move |ctx, preq| {
         let registry = registry.clone();
+        let meter = meter.clone();
+        let telemetry = extract_telemetry(ctx);
         Box::pin(async move {
             let value = preq.read_json().await?;
             let payload: EmbedPayload = serde_json::from_value(value)
                 .map_err(|err| InterceptError::schema(&format!("payload decode: {err}")))?;
+            let item_count = payload.items.len();
             let embed_req = payload.into_request();
             let model_id = embed_req.model_id.clone();
 
@@ -230,6 +451,8 @@ async fn embed_handler(State(state): State<AppState>, req: Request<Body>) -> Res
                 .await
                 .map_err(|err| InterceptError::from_error(err.into_inner()))?;
 
+            record_embed_usage(&meter, &telemetry, &model_id, &response.usage, item_count);
+
             serde_json::to_value(response)
                 .map_err(|err| InterceptError::internal(&format!("encode response: {err}")))
         })
@@ -239,13 +462,17 @@ async fn embed_handler(State(state): State<AppState>, req: Request<Body>) -> Res
 
 async fn rerank_handler(State(state): State<AppState>, req: Request<Body>) -> Response {
     let registry = state.registry.clone();
+    let meter = state.meter.clone();
 
-    handle_with_chain(req, &state.chain, move |_ctx, preq| {
+    handle_with_chain(req, &state.chain, move |ctx, preq| {
         let registry = registry.clone();
+        let meter = meter.clone();
+        let telemetry = extract_telemetry(ctx);
         Box::pin(async move {
             let value = preq.read_json().await?;
             let payload: RerankPayload = serde_json::from_value(value)
                 .map_err(|err| InterceptError::schema(&format!("payload decode: {err}")))?;
+            let candidate_count = payload.candidates.len();
             let rerank_req = payload.into_request();
             let model_id = rerank_req.model_id.clone();
 
@@ -262,6 +489,14 @@ async fn rerank_handler(State(state): State<AppState>, req: Request<Body>) -> Re
                 .await
                 .map_err(|err| InterceptError::from_error(err.into_inner()))?;
 
+            record_rerank_usage(
+                &meter,
+                &telemetry,
+                &model_id,
+                &response.usage,
+                candidate_count,
+            );
+
             serde_json::to_value(response)
                 .map_err(|err| InterceptError::internal(&format!("encode response: {err}")))
         })
@@ -270,8 +505,8 @@ async fn rerank_handler(State(state): State<AppState>, req: Request<Body>) -> Re
 }
 
 async fn chat_stream_handler(State(state): State<AppState>, mut req: Request<Body>) -> Response {
-    let headers = match enforce_chain(&mut req, &state.chain).await {
-        Ok(headers) => headers,
+    let (headers, telemetry) = match enforce_chain(&mut req, &state.chain).await {
+        Ok(parts) => parts,
         Err(resp) => return resp,
     };
 
@@ -280,6 +515,7 @@ async fn chat_stream_handler(State(state): State<AppState>, mut req: Request<Bod
         Err(resp) => return resp,
     };
     let chat_req = payload.into_request();
+    let model_id = chat_req.model_id.clone();
 
     let model = {
         let registry = state.registry.read().await;
@@ -295,10 +531,15 @@ async fn chat_stream_handler(State(state): State<AppState>, mut req: Request<Bod
         Err(err) => return intercept_error(InterceptError::from_error(err.into_inner())),
     };
 
+    let telemetry_stream = telemetry.clone();
+    let model_id_stream = model_id.clone();
+    let meter_stream = state.meter.clone();
+
     let mapped = async_stream::stream! {
         let mut inner = stream;
         let started_at = Instant::now();
         let mut first_emitted = false;
+        let mut usage_recorded = false;
 
         while let Some(delta) = inner.next().await {
             match delta {
@@ -307,6 +548,13 @@ async fn chat_stream_handler(State(state): State<AppState>, mut req: Request<Bod
                     if envelope.first_token_ms.is_none() && !first_emitted {
                         envelope.first_token_ms = Some(started_at.elapsed().as_millis().min(u128::from(u32::MAX)) as u32);
                         first_emitted = true;
+                    }
+
+                    if let Some(usage) = envelope.usage_partial.as_ref() {
+                        if !usage_recorded {
+                            record_chat_usage(&meter_stream, &telemetry_stream, &model_id_stream, usage, "stream");
+                            usage_recorded = true;
+                        }
                     }
 
                     match serde_json::to_string(&envelope) {
@@ -335,6 +583,18 @@ async fn chat_stream_handler(State(state): State<AppState>, mut req: Request<Bod
                 }
             }
         }
+
+        if !usage_recorded {
+            let usage = Usage {
+                input_tokens: 0,
+                output_tokens: 0,
+                cached_tokens: None,
+                image_units: None,
+                audio_seconds: None,
+                requests: 1,
+            };
+            record_chat_usage(&meter_stream, &telemetry_stream, &model_id_stream, &usage, "stream");
+        }
     };
 
     let mut response = Sse::new(mapped)
@@ -349,7 +609,7 @@ async fn chat_stream_handler(State(state): State<AppState>, mut req: Request<Bod
 async fn enforce_chain(
     req: &mut Request<Body>,
     chain: &InterceptorChain,
-) -> Result<HeaderMap, Response> {
+) -> Result<(HeaderMap, RequestTelemetry), Response> {
     let cx = InterceptContext::default();
     let mut preq = AxumReq {
         req,
@@ -361,8 +621,15 @@ async fn enforce_chain(
         body: None,
     };
 
+    let telemetry_holder = Arc::new(Mutex::new(None::<RequestTelemetry>));
+    let telemetry_clone = telemetry_holder.clone();
+
     match chain
-        .run_with_handler(cx, &mut preq, &mut pres, |_ctx, _| {
+        .run_with_handler(cx, &mut preq, &mut pres, move |ctx, _| {
+            let snapshot = extract_telemetry(ctx);
+            if let Ok(mut guard) = telemetry_clone.lock() {
+                *guard = Some(snapshot);
+            }
             async move { Ok(serde_json::Value::Null) }.boxed()
         })
         .await
@@ -377,7 +644,12 @@ async fn enforce_chain(
                 *response.headers_mut() = pres.headers;
                 Err(response)
             } else {
-                Ok(pres.headers)
+                let telemetry = telemetry_holder
+                    .lock()
+                    .ok()
+                    .and_then(|guard| guard.clone())
+                    .unwrap_or_default();
+                Ok((pres.headers, telemetry))
             }
         }
         Err(err) => Err(intercept_error(err)),
@@ -532,6 +804,7 @@ mod tests {
             registry: Arc::new(RwLock::new(registry)),
             policy: StructOutPolicy::StrictReject,
             chain: Arc::new(build_chain()),
+            meter: MeterRegistry::default(),
         };
 
         build_router(state)
@@ -546,7 +819,7 @@ mod tests {
 
     #[tokio::test]
     async fn embed_endpoint_returns_vectors() {
-        let mut app = build_test_router();
+        let app = build_test_router();
 
         let request = Request::builder()
             .method("POST")
@@ -582,7 +855,7 @@ mod tests {
 
     #[tokio::test]
     async fn rerank_endpoint_orders_candidates() {
-        let mut app = build_test_router();
+        let app = build_test_router();
 
         let request = Request::builder()
             .method("POST")
@@ -617,7 +890,7 @@ mod tests {
 
     #[tokio::test]
     async fn embed_requires_authorization() {
-        let mut app = build_test_router();
+        let app = build_test_router();
 
         let request = Request::builder()
             .method("POST")
