@@ -11,6 +11,16 @@ default = []
 schema_json = ["schemars"]
 provider-local = []
 provider-openai = ["dep:reqwest", "dep:async-stream", "dep:tokio"]
+service = [
+    "dep:axum",
+    "dep:tracing",
+    "dep:tracing-subscriber",
+    "dep:anyhow",
+    "dep:soulbase-auth",
+    "dep:soulbase-interceptors",
+    "dep:tokio",
+    "dep:async-stream"
+]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -22,7 +32,14 @@ futures-util = "0.3"
 schemars = { version = "0.8", optional = true }
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"], optional = true }
 async-stream = { version = "0.3", optional = true }
-tokio = { version = "1", features = ["sync"], optional = true }
+tokio = { version = "1", features = ["sync", "rt-multi-thread", "macros", "signal"], optional = true }
+axum = { version = "0.7", features = ["macros"], optional = true }
+tracing = { version = "0.1", optional = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
+anyhow = { version = "1", optional = true }
+
+soulbase-auth = { path = "../soulbase-auth", version = "1.0.0", optional = true }
+soulbase-interceptors = { path = "../soulbase-interceptors", version = "1.0.0", features = ["with-axum"], optional = true }
 
 # internal crates
 soulbase-types = { path = "../soulbase-types", version = "1.0.0" }
@@ -32,3 +49,9 @@ soulbase-tools = { path = "../soulbase-tools", version = "1.0.0" }
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread","macros","time"] }
 wiremock = "0.6"
+tower = { version = "0.4", features = ["util"] }
+
+[[bin]]
+name = "soulbase-llm-service"
+path = "src/bin/llm-service.rs"
+required-features = ["service"]

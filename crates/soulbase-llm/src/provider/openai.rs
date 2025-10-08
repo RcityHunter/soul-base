@@ -18,10 +18,11 @@ use tokio::sync::Semaphore;
 
 use crate::{
     chat::{ChatDelta, ChatRequest, ChatResponse, ResponseFormat, ResponseKind, ToolSpec},
+    embed::{EmbedModel, EmbedRequest, EmbedResponse, VectorDType},
     errors::LlmError,
     jsonsafe::{enforce_json, StructOutPolicy},
     model::{ContentSegment, FinishReason, Message, Role, ToolCallProposal, Usage},
-    provider::{DynChatModel, ProviderCaps, ProviderCfg, ProviderFactory, Registry},
+    provider::{DynChatModel, DynEmbedModel, ProviderCaps, ProviderCfg, ProviderFactory, Registry},
 };
 use soulbase_types::prelude::Id;
 
@@ -96,6 +97,7 @@ struct OpenAiShared {
     config: OpenAiConfig,
     limiter: Arc<Semaphore>,
     chat_url: Url,
+    embed_url: Url,
 }
 
 impl OpenAiShared {
@@ -149,6 +151,10 @@ impl OpenAiProviderFactory {
             .base_url
             .join(CHAT_COMPLETIONS_PATH)
             .map_err(|err| LlmError::unknown(&format!("openai chat url join failed: {err}")))?;
+        let embed_url = config
+            .base_url
+            .join("embeddings")
+            .map_err(|err| LlmError::unknown(&format!("openai embed url join failed: {err}")))?;
 
         let limiter = Arc::new(Semaphore::new(config.max_concurrent_requests));
 
@@ -156,6 +162,7 @@ impl OpenAiProviderFactory {
             shared: Arc::new(OpenAiShared {
                 client,
                 chat_url,
+                embed_url,
                 limiter,
                 config,
             }),
@@ -177,7 +184,7 @@ impl ProviderFactory for OpenAiProviderFactory {
             chat: true,
             stream: true,
             tools: true,
-            embeddings: false,
+            embeddings: true,
             rerank: false,
             multimodal: false,
             json_schema: true,
@@ -191,9 +198,22 @@ impl ProviderFactory for OpenAiProviderFactory {
             shared: self.shared.clone(),
         }))
     }
+
+    fn create_embed(&self, model: &str, _cfg: &ProviderCfg) -> Option<Box<DynEmbedModel>> {
+        let resolved = self.shared.resolve_model(model);
+        Some(Box::new(OpenAiEmbedModel {
+            model: resolved,
+            shared: self.shared.clone(),
+        }))
+    }
 }
 
 struct OpenAiChatModel {
+    model: String,
+    shared: Arc<OpenAiShared>,
+}
+
+struct OpenAiEmbedModel {
     model: String,
     shared: Arc<OpenAiShared>,
 }
@@ -284,6 +304,24 @@ struct JsonSchemaSpec {
 #[derive(Serialize)]
 struct StreamOptions {
     include_usage: bool,
+}
+
+#[derive(Serialize)]
+struct EmbeddingsRequest<'a> {
+    model: &'a str,
+    input: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct EmbeddingsResponsePayload {
+    data: Vec<EmbeddingData>,
+    usage: Option<UsagePayload>,
+    model: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct EmbeddingData {
+    embedding: Vec<f32>,
 }
 
 #[derive(Deserialize)]
@@ -692,6 +730,129 @@ impl crate::chat::ChatModel for OpenAiChatModel {
         };
 
         Ok(Box::pin(stream))
+    }
+}
+
+#[async_trait::async_trait]
+impl EmbedModel for OpenAiEmbedModel {
+    async fn embed(&self, req: EmbedRequest) -> Result<EmbedResponse, LlmError> {
+        let _permit = self
+            .shared
+            .limiter
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|err| LlmError::unknown(&format!("openai limiter closed: {err}")))?;
+
+        if req.items.is_empty() {
+            return Err(LlmError::provider_unavailable(
+                "embed request requires at least one item",
+            ));
+        }
+
+        let EmbedRequest {
+            model_id: _model_id,
+            items,
+            normalize,
+            pooling,
+        } = req;
+
+        let request = EmbeddingsRequest {
+            model: &self.model,
+            input: items.iter().map(|item| item.text.clone()).collect(),
+        };
+
+        let response = self
+            .shared
+            .client
+            .post(self.shared.embed_url.clone())
+            .json(&request)
+            .send()
+            .await
+            .map_err(|err| {
+                LlmError::provider_unavailable(&format!("openai request error: {err}"))
+            })?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "<unavailable>".into());
+            return Err(map_http_error(status, &body));
+        }
+
+        let payload: EmbeddingsResponsePayload = response.json().await.map_err(|err| {
+            LlmError::provider_unavailable(&format!("openai response decode: {err}"))
+        })?;
+
+        let EmbeddingsResponsePayload {
+            data,
+            usage: usage_info,
+            model,
+        } = payload;
+        let mut data = data;
+        if data.is_empty() {
+            return Err(LlmError::provider_unavailable(
+                "openai returned no embeddings",
+            ));
+        }
+
+        let dim = data[0].embedding.len() as u32;
+        let mut vectors = Vec::with_capacity(data.len());
+        for mut embedding in data.into_iter().map(|entry| entry.embedding) {
+            if embedding.len() != dim as usize {
+                return Err(LlmError::provider_unavailable(
+                    "openai returned inconsistent embedding dimensions",
+                ));
+            }
+            if normalize {
+                let norm = embedding
+                    .iter()
+                    .map(|v| v * v)
+                    .sum::<f32>()
+                    .sqrt()
+                    .max(1e-6);
+                for value in embedding.iter_mut() {
+                    *value /= norm;
+                }
+            }
+            vectors.push(embedding);
+        }
+
+        let usage = usage_info
+            .map(|usage| Usage {
+                input_tokens: usage.prompt_tokens.unwrap_or_default(),
+                output_tokens: 0,
+                cached_tokens: None,
+                image_units: None,
+                audio_seconds: None,
+                requests: 1,
+            })
+            .unwrap_or_else(|| Usage {
+                input_tokens: items
+                    .iter()
+                    .map(|item| (item.text.len() as u32).div_ceil(4))
+                    .sum(),
+                output_tokens: 0,
+                cached_tokens: None,
+                image_units: None,
+                audio_seconds: None,
+                requests: 1,
+            });
+
+        Ok(EmbedResponse {
+            dim,
+            dtype: VectorDType::F32,
+            vectors,
+            usage,
+            cost: None,
+            provider_meta: json!({
+                "provider": "openai",
+                "model": model,
+                "pooling": pooling,
+            }),
+        })
     }
 }
 

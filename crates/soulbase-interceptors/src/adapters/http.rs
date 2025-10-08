@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use axum::body::{to_bytes, Body};
 use axum::http::{Request, StatusCode};
 use axum::response::Response;
-use futures::FutureExt;
+use futures::future::BoxFuture;
 use http::header::HeaderName;
 use std::str::FromStr;
 
@@ -77,14 +77,18 @@ impl ProtoResponse for AxumRes {
     }
 }
 
-pub async fn handle_with_chain<F, Fut>(
+pub async fn handle_with_chain<F>(
     mut req: Request<Body>,
     chain: &InterceptorChain,
     handler: F,
 ) -> Response
 where
-    F: FnOnce(&mut InterceptContext, &mut dyn ProtoRequest) -> Fut + Send + 'static,
-    Fut: std::future::Future<Output = Result<serde_json::Value, InterceptError>> + Send + 'static,
+    F: for<'a> FnOnce(
+            &'a mut InterceptContext,
+            &'a mut dyn ProtoRequest,
+        ) -> BoxFuture<'a, Result<serde_json::Value, InterceptError>>
+        + Send
+        + 'static,
 {
     let cx = InterceptContext::default();
     let mut preq = AxumReq {
@@ -98,9 +102,7 @@ where
     };
 
     match chain
-        .run_with_handler(cx, &mut preq, &mut pres, |ctx, req| {
-            handler(ctx, req).boxed()
-        })
+        .run_with_handler(cx, &mut preq, &mut pres, handler)
         .await
     {
         Ok(()) => {

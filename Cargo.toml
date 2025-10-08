@@ -14,8 +14,7 @@ members = [
     "crates/soulbase-cache",
     "crates/soulbase-blob",
     "crates/soulbase-crypto",
-    "crates/soulbase-net",
-    "crates/soulbase-llm-service"
+    "crates/soulbase-net"
 ]
 resolver = "2"
 
