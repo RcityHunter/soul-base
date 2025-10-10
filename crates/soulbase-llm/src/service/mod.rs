@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     convert::Infallible,
     net::SocketAddr,
     sync::{Arc, Mutex},
@@ -13,16 +14,25 @@ use axum::{
         sse::{Event, KeepAlive, Sse},
         IntoResponse, Response,
     },
-    routing::post,
+    routing::{delete, get, post},
     Router,
 };
+use chrono::{DateTime, Utc};
 use futures_util::future::FutureExt;
 use futures_util::StreamExt;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use soulbase_errors::prelude::codes;
 #[cfg(feature = "provider-openai")]
 use soulbase_errors::prelude::PublicErrorView;
+use soulbase_sandbox::prelude::{PolicyConfig, Sandbox};
+use soulbase_tools::errors::ToolError;
+use soulbase_tools::prelude::{
+    InMemoryRegistry as ToolRegistryMemory, InvokeRequest, InvokeStatus, Invoker, InvokerImpl,
+    ToolCall as ToolInvocation, ToolId, ToolOrigin,
+};
+use soulbase_types::prelude::TenantId;
 use tokio::sync::RwLock;
 use tracing::{error, info, warn};
 
@@ -45,6 +55,111 @@ pub struct AppState {
     policy: StructOutPolicy,
     chain: Arc<InterceptorChain>,
     meter: MeterRegistry,
+    plan_store: ToolPlanStore,
+    #[allow(dead_code)]
+    tool_registry: Arc<ToolRegistryMemory>,
+    tool_invoker: Arc<dyn Invoker>,
+    explain_store: ExplainStore,
+}
+
+#[derive(Clone, Default)]
+struct ToolPlanStore {
+    inner: Arc<Mutex<HashMap<(String, String), Vec<ToolCallProposal>>>>,
+}
+
+impl ToolPlanStore {
+    fn record(&self, tenant: &TenantId, key: &str, plan: Vec<ToolCallProposal>) {
+        if let Ok(mut guard) = self.inner.lock() {
+            guard.insert((tenant.0.clone(), key.to_string()), plan);
+        }
+    }
+
+    fn get(&self, tenant: &TenantId, key: &str) -> Option<Vec<ToolCallProposal>> {
+        self.inner
+            .lock()
+            .ok()
+            .and_then(|guard| guard.get(&(tenant.0.clone(), key.to_string())).cloned())
+    }
+
+    fn list(&self, tenant: &TenantId) -> Vec<PlanSummary> {
+        self.inner
+            .lock()
+            .map(|guard| {
+                guard
+                    .iter()
+                    .filter_map(|((tenant_id, plan_id), steps)| {
+                        if tenant_id == &tenant.0 {
+                            Some(PlanSummary {
+                                plan_id: plan_id.clone(),
+                                step_count: steps.len() as u32,
+                            })
+                        } else {
+                            None
+                        }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn remove(&self, tenant: &TenantId, key: &str) -> bool {
+        self.inner
+            .lock()
+            .map(|mut guard| guard.remove(&(tenant.0.clone(), key.to_string())).is_some())
+            .unwrap_or(false)
+    }
+}
+
+#[derive(Clone, Default)]
+struct ExplainStore {
+    inner: Arc<Mutex<HashMap<String, ExplainRecord>>>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct ExplainRecord {
+    explain_id: String,
+    provider: String,
+    fingerprint: Option<String>,
+    tenant: TenantId,
+    plan_id: Option<String>,
+    created_at: DateTime<Utc>,
+    metadata: serde_json::Value,
+}
+
+impl ExplainStore {
+    fn record(
+        &self,
+        tenant: &TenantId,
+        plan_id: Option<&str>,
+        provider: &str,
+        fingerprint: Option<String>,
+        metadata: serde_json::Value,
+    ) -> String {
+        let explain_id = format!(
+            "exp_{}",
+            Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        );
+        let record = ExplainRecord {
+            explain_id: explain_id.clone(),
+            provider: provider.to_string(),
+            fingerprint,
+            tenant: tenant.clone(),
+            plan_id: plan_id.map(|s| s.to_string()),
+            created_at: Utc::now(),
+            metadata,
+        };
+        if let Ok(mut guard) = self.inner.lock() {
+            guard.insert(explain_id.clone(), record);
+        }
+        explain_id
+    }
+
+    fn get(&self, explain_id: &str) -> Option<ExplainRecord> {
+        self.inner
+            .lock()
+            .ok()
+            .and_then(|guard| guard.get(explain_id).cloned())
+    }
 }
 
 #[derive(Deserialize)]
@@ -218,6 +333,12 @@ struct RequestTelemetry {
     action: Option<String>,
 }
 
+#[derive(Clone, Debug, Serialize)]
+struct PlanSummary {
+    plan_id: String,
+    step_count: u32,
+}
+
 fn extract_telemetry(ctx: &InterceptContext) -> RequestTelemetry {
     let tenant = ctx.subject.as_ref().map(|subject| subject.tenant.0.clone());
     let subject_kind = ctx
@@ -240,6 +361,27 @@ fn extract_telemetry(ctx: &InterceptContext) -> RequestTelemetry {
         subject_kind,
         resource,
         action,
+    }
+}
+
+fn extract_plan_key(metadata: &serde_json::Value) -> Option<String> {
+    match metadata {
+        serde_json::Value::Object(map) => map
+            .get("plan_id")
+            .and_then(|value| value.as_str().map(|s| s.to_string())),
+        _ => None,
+    }
+}
+
+fn record_tool_plan(
+    store: &ToolPlanStore,
+    tenant: &TenantId,
+    plan_key: Option<&str>,
+    plan: &[ToolCallProposal],
+) {
+    if let Some(key) = plan_key {
+        let cloned = plan.to_vec();
+        store.record(tenant, key, cloned);
     }
 }
 
@@ -349,6 +491,42 @@ fn record_rerank_usage(
     );
 }
 
+fn map_tool_error(err: ToolError) -> InterceptError {
+    InterceptError::from_error(err.into_inner())
+}
+
+fn build_tooling() -> (Arc<ToolRegistryMemory>, Arc<dyn Invoker>) {
+    let tool_registry = Arc::new(ToolRegistryMemory::new());
+    let tool_registry_for_invoker: Arc<dyn soulbase_tools::prelude::ToolRegistry> =
+        tool_registry.clone();
+    let tool_auth = Arc::new(AuthFacade::minimal());
+    let sandbox = Sandbox::minimal();
+    let policy = PolicyConfig::default();
+    let invoker_impl = InvokerImpl::new(tool_registry_for_invoker, tool_auth, sandbox, policy);
+    let tool_invoker: Arc<dyn Invoker> = Arc::new(invoker_impl);
+    (tool_registry, tool_invoker)
+}
+
+fn create_app_state(
+    plan_store: ToolPlanStore,
+    tool_registry: Arc<ToolRegistryMemory>,
+    tool_invoker: Arc<dyn Invoker>,
+) -> AppState {
+    let mut registry = Registry::new();
+    install_providers(&mut registry);
+
+    AppState {
+        registry: Arc::new(RwLock::new(registry)),
+        policy: StructOutPolicy::StrictReject,
+        chain: Arc::new(build_chain()),
+        meter: MeterRegistry::default(),
+        plan_store,
+        tool_registry,
+        tool_invoker,
+        explain_store: ExplainStore::default(),
+    }
+}
+
 pub async fn run() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
@@ -370,35 +548,39 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/chat/stream", post(chat_stream_handler))
         .route("/v1/embed", post(embed_handler))
         .route("/v1/rerank", post(rerank_handler))
+        .route("/v1/plan", get(plan_list_handler))
+        .route("/v1/plan/:plan_id", get(plan_handler))
+        .route("/v1/plan/:plan_id/execute", post(plan_execute_handler))
+        .route("/v1/plan/:plan_id", delete(plan_delete_handler))
+        .route("/v1/explain/:explain_id", get(explain_handler))
         .with_state(state)
 }
 
 pub fn default_state() -> AppState {
-    let mut registry = Registry::new();
-    install_providers(&mut registry);
-
-    AppState {
-        registry: Arc::new(RwLock::new(registry)),
-        policy: StructOutPolicy::StrictReject,
-        chain: Arc::new(build_chain()),
-        meter: MeterRegistry::default(),
-    }
+    let plan_store = ToolPlanStore::default();
+    let (tool_registry, tool_invoker) = build_tooling();
+    create_app_state(plan_store, tool_registry, tool_invoker)
 }
 
 async fn chat_handler(State(state): State<AppState>, req: Request<Body>) -> Response {
     let registry = state.registry.clone();
     let policy = state.policy.clone();
     let meter = state.meter.clone();
+    let plan_store = state.plan_store.clone();
+    let explain_store = state.explain_store.clone();
 
     handle_with_chain(req, &state.chain, move |ctx, preq| {
         let registry = registry.clone();
         let policy = policy.clone();
         let meter = meter.clone();
+        let plan_store = plan_store.clone();
+        let explain_store = explain_store.clone();
         let telemetry = extract_telemetry(ctx);
         Box::pin(async move {
             let value = preq.read_json().await?;
             let payload: ChatPayload = serde_json::from_value(value)
                 .map_err(|err| InterceptError::schema(&format!("payload decode: {err}")))?;
+            let plan_key = extract_plan_key(&payload.metadata);
             let req = payload.into_request();
             let model_id = req.model_id.clone();
 
@@ -408,14 +590,46 @@ async fn chat_handler(State(state): State<AppState>, req: Request<Body>) -> Resp
             };
             let model = model.ok_or_else(|| InterceptError::deny_policy("model not registered"))?;
 
-            let response = model
+            let mut response = model
                 .chat(req, &policy)
                 .await
                 .map_err(|err| InterceptError::from_error(err.into_inner()))?;
 
             record_chat_usage(&meter, &telemetry, &model_id, &response.usage, "sync");
+            if let Some(ref tenant_id) = telemetry.tenant {
+                let tenant = TenantId(tenant_id.to_string());
+                record_tool_plan(
+                    &plan_store,
+                    &tenant,
+                    plan_key.as_deref(),
+                    &response.message.tool_calls,
+                );
 
-            serde_json::to_value(response)
+                let provider = response
+                    .provider_meta
+                    .get("provider")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown")
+                    .to_string();
+                let fingerprint = response
+                    .provider_meta
+                    .get("system_fingerprint")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let explain_id = explain_store.record(
+                    &tenant,
+                    plan_key.as_deref(),
+                    &provider,
+                    fingerprint.clone(),
+                    response.provider_meta.clone(),
+                );
+
+                if let Some(obj) = response.provider_meta.as_object_mut() {
+                    obj.insert("explain_id".into(), serde_json::Value::String(explain_id));
+                }
+            }
+
+            serde_json::to_value(&response)
                 .map_err(|err| InterceptError::internal(&format!("encode response: {err}")))
         })
     })
@@ -504,7 +718,239 @@ async fn rerank_handler(State(state): State<AppState>, req: Request<Body>) -> Re
     .await
 }
 
+async fn plan_handler(State(state): State<AppState>, req: Request<Body>) -> Response {
+    let store = state.plan_store.clone();
+
+    handle_with_chain(req, &state.chain, move |ctx, preq| {
+        let store = store.clone();
+        let tenant = ctx
+            .subject
+            .as_ref()
+            .map(|subject| subject.tenant.clone())
+            .ok_or_else(|| InterceptError::deny_policy("tenant context missing"));
+
+        Box::pin(async move {
+            let tenant = tenant?;
+            let raw_path = preq.path();
+            let plan_id = raw_path
+                .strip_prefix("/v1/plan/")
+                .filter(|segment| !segment.is_empty())
+                .ok_or_else(|| InterceptError::schema("plan id missing"))?;
+
+            let plan = store.get(&tenant, plan_id).ok_or_else(|| {
+                InterceptError::from_public(codes::STORAGE_NOT_FOUND, "Plan not found")
+            })?;
+
+            Ok(json!({
+                "plan_id": plan_id,
+                "steps": plan,
+            }))
+        })
+    })
+    .await
+}
+
+async fn plan_list_handler(State(state): State<AppState>, req: Request<Body>) -> Response {
+    let store = state.plan_store.clone();
+
+    handle_with_chain(req, &state.chain, move |ctx, _preq| {
+        let store = store.clone();
+        let tenant = ctx
+            .subject
+            .as_ref()
+            .map(|subject| subject.tenant.clone())
+            .ok_or_else(|| InterceptError::deny_policy("tenant context missing"));
+
+        Box::pin(async move {
+            let tenant = tenant?;
+            let plans = store.list(&tenant);
+            Ok(json!({
+                "plans": plans,
+            }))
+        })
+    })
+    .await
+}
+
+async fn plan_delete_handler(State(state): State<AppState>, req: Request<Body>) -> Response {
+    let store = state.plan_store.clone();
+
+    handle_with_chain(req, &state.chain, move |ctx, preq| {
+        let store = store.clone();
+        let tenant = ctx
+            .subject
+            .as_ref()
+            .map(|subject| subject.tenant.clone())
+            .ok_or_else(|| InterceptError::deny_policy("tenant context missing"));
+
+        Box::pin(async move {
+            let tenant = tenant?;
+            let raw_path = preq.path();
+            let plan_id = raw_path
+                .strip_prefix("/v1/plan/")
+                .filter(|segment| !segment.is_empty())
+                .ok_or_else(|| InterceptError::schema("plan id missing"))?;
+
+            let removed = store.remove(&tenant, plan_id);
+            if !removed {
+                return Err(InterceptError::from_public(
+                    codes::STORAGE_NOT_FOUND,
+                    "Plan not found",
+                ));
+            }
+
+            Ok(json!({
+                "plan_id": plan_id,
+                "deleted": true,
+            }))
+        })
+    })
+    .await
+}
+
+async fn explain_handler(State(state): State<AppState>, req: Request<Body>) -> Response {
+    let store = state.explain_store.clone();
+
+    handle_with_chain(req, &state.chain, move |ctx, preq| {
+        let store = store.clone();
+        let tenant = ctx
+            .subject
+            .as_ref()
+            .map(|subject| subject.tenant.clone())
+            .ok_or_else(|| InterceptError::deny_policy("tenant context missing"));
+
+        Box::pin(async move {
+            let tenant = tenant?;
+            let raw_path = preq.path();
+            let explain_id = raw_path
+                .strip_prefix("/v1/explain/")
+                .filter(|segment| !segment.is_empty())
+                .ok_or_else(|| InterceptError::schema("explain id missing"))?;
+
+            let record = store.get(explain_id).ok_or_else(|| {
+                InterceptError::from_public(codes::STORAGE_NOT_FOUND, "Explain record not found")
+            })?;
+
+            if record.tenant != tenant {
+                return Err(InterceptError::deny_policy(
+                    "Explain record not owned by tenant",
+                ));
+            }
+
+            Ok(json!({
+                "explain_id": record.explain_id,
+                "provider": record.provider,
+                "fingerprint": record.fingerprint,
+                "plan_id": record.plan_id,
+                "created_at": record.created_at.to_rfc3339(),
+                "metadata": record.metadata,
+            }))
+        })
+    })
+    .await
+}
+
+async fn plan_execute_handler(State(state): State<AppState>, req: Request<Body>) -> Response {
+    let store = state.plan_store.clone();
+    let invoker = state.tool_invoker.clone();
+
+    handle_with_chain(req, &state.chain, move |ctx, preq| {
+        let store = store.clone();
+        let invoker = invoker.clone();
+        let subject = ctx
+            .subject
+            .clone()
+            .ok_or_else(|| InterceptError::deny_policy("subject context missing"));
+
+        Box::pin(async move {
+            let subject = subject?;
+            let tenant = subject.tenant.clone();
+            let raw_path = preq.path();
+            let plan_id = raw_path
+                .strip_prefix("/v1/plan/")
+                .and_then(|rest| rest.strip_suffix("/execute"))
+                .filter(|segment| !segment.is_empty())
+                .ok_or_else(|| InterceptError::schema("plan id missing"))?;
+
+            let plan = store.get(&tenant, plan_id).ok_or_else(|| {
+                InterceptError::from_public(codes::STORAGE_NOT_FOUND, "Plan not found")
+            })?;
+
+            let mut results = Vec::new();
+
+            for step in plan.iter() {
+                let tool_id = ToolId(step.name.clone());
+                let call = ToolInvocation {
+                    tool_id,
+                    call_id: step.call_id.clone(),
+                    tenant: tenant.clone(),
+                    actor: subject.clone(),
+                    origin: ToolOrigin::Llm,
+                    args: step.arguments.clone(),
+                    consent: None,
+                    idempotency_key: None,
+                };
+
+                let preflight_output = invoker.preflight(&call).await.map_err(map_tool_error)?;
+
+                if !preflight_output.allow {
+                    let reason = preflight_output
+                        .reason
+                        .as_deref()
+                        .unwrap_or("tool invocation denied");
+                    return Err(InterceptError::deny_policy(reason));
+                }
+
+                let spec = preflight_output
+                    .spec
+                    .clone()
+                    .ok_or_else(|| InterceptError::internal("tool spec missing from preflight"))?;
+                let profile_hash = preflight_output
+                    .profile_hash
+                    .clone()
+                    .unwrap_or_else(|| "profile".into());
+
+                let request = InvokeRequest {
+                    spec,
+                    call,
+                    profile_hash,
+                    obligations: preflight_output.obligations,
+                    planned_ops: preflight_output.planned_ops,
+                };
+
+                let invoke_result = invoker.invoke(request).await.map_err(map_tool_error)?;
+
+                let status_str = match invoke_result.status {
+                    InvokeStatus::Ok => "ok",
+                    InvokeStatus::Denied => "denied",
+                    InvokeStatus::Error => "error",
+                };
+
+                results.push(json!({
+                    "call_id": step.call_id.0.clone(),
+                    "tool_id": step.name.clone(),
+                    "status": status_str,
+                    "output": invoke_result.output,
+                    "error_code": invoke_result.error_code,
+                    "evidence_ref": invoke_result.evidence_ref.map(|id| id.0),
+                }));
+            }
+
+            // Remove plan after successful execution to avoid replays.
+            store.remove(&tenant, plan_id);
+
+            Ok(json!({
+                "plan_id": plan_id,
+                "results": results,
+            }))
+        })
+    })
+    .await
+}
+
 async fn chat_stream_handler(State(state): State<AppState>, mut req: Request<Body>) -> Response {
+    let plan_store = state.plan_store.clone();
+    let explain_store = state.explain_store.clone();
     let (headers, telemetry) = match enforce_chain(&mut req, &state.chain).await {
         Ok(parts) => parts,
         Err(resp) => return resp,
@@ -514,6 +960,7 @@ async fn chat_stream_handler(State(state): State<AppState>, mut req: Request<Bod
         Ok(p) => p,
         Err(resp) => return resp,
     };
+    let plan_key = extract_plan_key(&payload.metadata);
     let chat_req = payload.into_request();
     let model_id = chat_req.model_id.clone();
 
@@ -534,6 +981,13 @@ async fn chat_stream_handler(State(state): State<AppState>, mut req: Request<Bod
     let telemetry_stream = telemetry.clone();
     let model_id_stream = model_id.clone();
     let meter_stream = state.meter.clone();
+    let plan_store_stream = plan_store.clone();
+    let explain_store_stream = explain_store.clone();
+    let plan_key_stream = plan_key.clone();
+    let tenant_stream = telemetry.tenant.clone();
+    let plan_acc_stream: Arc<Mutex<Vec<ToolCallProposal>>> = Arc::new(Mutex::new(Vec::new()));
+    let plan_acc_stream_inner = plan_acc_stream.clone();
+    let provider_name = model_id.split(':').next().unwrap_or("unknown").to_string();
 
     let mapped = async_stream::stream! {
         let mut inner = stream;
@@ -554,6 +1008,12 @@ async fn chat_stream_handler(State(state): State<AppState>, mut req: Request<Bod
                         if !usage_recorded {
                             record_chat_usage(&meter_stream, &telemetry_stream, &model_id_stream, usage, "stream");
                             usage_recorded = true;
+                        }
+                    }
+
+                    if let Some(ref proposal) = envelope.tool_call_delta {
+                        if let Ok(mut guard) = plan_acc_stream.lock() {
+                            guard.push(proposal.clone());
                         }
                     }
 
@@ -584,6 +1044,13 @@ async fn chat_stream_handler(State(state): State<AppState>, mut req: Request<Bod
             }
         }
 
+        if let (Some(key), Some(ref tenant_id)) = (plan_key_stream.as_deref(), tenant_stream.as_ref()) {
+            if let Ok(collected) = plan_acc_stream_inner.lock() {
+                let tenant = TenantId(tenant_id.to_string());
+                plan_store_stream.record(&tenant, key, collected.clone());
+            }
+        }
+
         if !usage_recorded {
             let usage = Usage {
                 input_tokens: 0,
@@ -594,6 +1061,21 @@ async fn chat_stream_handler(State(state): State<AppState>, mut req: Request<Bod
                 requests: 1,
             };
             record_chat_usage(&meter_stream, &telemetry_stream, &model_id_stream, &usage, "stream");
+        }
+
+        if let Some(ref tenant_id) = tenant_stream {
+            let tenant = TenantId(tenant_id.clone());
+            let explain_id = explain_store_stream.record(
+                &tenant,
+                plan_key_stream.as_deref(),
+                &provider_name,
+                None,
+                json!({
+                    "provider": provider_name,
+                }),
+            );
+            let explain_event = json!({ "explain_id": explain_id });
+            yield Ok::<Event, Infallible>(Event::default().event("explain").data(explain_event.to_string()));
         }
     };
 
@@ -698,6 +1180,13 @@ fn install_providers(registry: &mut Registry) {
                 cfg = cfg.with_alias("thin-waist", "gpt-4o-mini");
             }
 
+            if let Ok(rpm) = std::env::var("OPENAI_RATE_LIMIT_RPM")
+                .ok()
+                .and_then(|v| v.parse::<u32>().ok())
+            {
+                cfg = cfg.with_rate_limit(rpm);
+            }
+
             match OpenAiProviderFactory::new(cfg) {
                 Ok(factory) => factory.install(registry),
                 Err(err) => {
@@ -769,6 +1258,66 @@ fn build_chain() -> InterceptorChain {
                 attrs_from_body: false,
             },
         },
+        RoutePolicySpec {
+            when: MatchCond::Http {
+                method: "GET".into(),
+                path_glob: "/v1/plan/*".into(),
+            },
+            bind: RouteBindingSpec {
+                resource: "urn:llm:plan".into(),
+                action: "Read".into(),
+                attrs_template: Some(json!({ "allow": true })),
+                attrs_from_body: false,
+            },
+        },
+        RoutePolicySpec {
+            when: MatchCond::Http {
+                method: "GET".into(),
+                path_glob: "/v1/plan".into(),
+            },
+            bind: RouteBindingSpec {
+                resource: "urn:llm:plan".into(),
+                action: "List".into(),
+                attrs_template: Some(json!({ "allow": true })),
+                attrs_from_body: false,
+            },
+        },
+        RoutePolicySpec {
+            when: MatchCond::Http {
+                method: "POST".into(),
+                path_glob: "/v1/plan/*".into(),
+            },
+            bind: RouteBindingSpec {
+                resource: "urn:llm:plan".into(),
+                action: "Invoke".into(),
+                attrs_template: Some(json!({ "allow": true })),
+                attrs_from_body: false,
+            },
+        },
+        RoutePolicySpec {
+            when: MatchCond::Http {
+                method: "DELETE".into(),
+                path_glob: "/v1/plan/*".into(),
+            },
+            bind: RouteBindingSpec {
+                resource: "urn:llm:plan".into(),
+                action: "Delete".into(),
+                attrs_template: Some(json!({ "allow": true })),
+                attrs_from_body: false,
+            },
+        },
+        RoutePolicySpec {
+            when: MatchCond::Http {
+                method: "GET".into(),
+                path_glob: "/v1/explain/*".into(),
+            },
+            bind: RouteBindingSpec {
+                resource: "urn:llm:explain".into(),
+                action: "Read".into(),
+                attrs_template: Some(json!({ "allow": true })),
+                attrs_from_body: false,
+            },
+        },
     ]);
 
     InterceptorChain::new(vec![
@@ -789,25 +1338,25 @@ mod tests {
     use super::*;
     use axum::http::{Request, StatusCode};
     use serde_json::json;
+    use soulbase_tools::manifest::{
+        CapabilityDecl, ConcurrencyKind, ConsentPolicy, IdempoKind, Limits, SafetyClass, SchemaDoc,
+        SideEffect, ToolId, ToolManifest,
+    };
+    use soulbase_tools::prelude::ToolRegistry;
+    use soulbase_types::prelude::{Id, TenantId};
     use tower::ServiceExt;
 
     const BODY_LIMIT: usize = 1_048_576;
 
-    fn build_test_router() -> Router {
+    fn build_test_router() -> (Router, ToolPlanStore, Arc<ToolRegistryMemory>) {
         std::env::remove_var("OPENAI_API_KEY");
         std::env::remove_var("OPENAI_MODEL_ALIAS");
 
-        let mut registry = Registry::new();
-        install_providers(&mut registry);
+        let plan_store = ToolPlanStore::default();
+        let (tool_registry, tool_invoker) = build_tooling();
+        let state = create_app_state(plan_store.clone(), tool_registry.clone(), tool_invoker);
 
-        let state = AppState {
-            registry: Arc::new(RwLock::new(registry)),
-            policy: StructOutPolicy::StrictReject,
-            chain: Arc::new(build_chain()),
-            meter: MeterRegistry::default(),
-        };
-
-        build_router(state)
+        (build_router(state), plan_store, tool_registry)
     }
 
     async fn json_body(response: Response) -> serde_json::Value {
@@ -817,9 +1366,55 @@ mod tests {
         serde_json::from_slice(&bytes).expect("parse json")
     }
 
+    fn schema_doc(value: serde_json::Value) -> SchemaDoc {
+        #[cfg(feature = "schema_json")]
+        {
+            serde_json::from_value(value).expect("schema")
+        }
+        #[cfg(not(feature = "schema_json"))]
+        {
+            value
+        }
+    }
+
+    fn sample_manifest(tool_id: &str) -> ToolManifest {
+        ToolManifest {
+            id: ToolId(tool_id.into()),
+            version: "1.0.0".into(),
+            display_name: "Sample Tool".into(),
+            description: "Sample tool for tests".into(),
+            tags: vec![],
+            input_schema: schema_doc(json!({"type": "object"})),
+            output_schema: schema_doc(json!({"type": "object"})),
+            scopes: vec![],
+            capabilities: vec![CapabilityDecl {
+                domain: "tmp".into(),
+                action: "use".into(),
+                resource: "".into(),
+                attrs: json!({}),
+            }],
+            side_effect: SideEffect::None,
+            safety_class: SafetyClass::Low,
+            consent: ConsentPolicy {
+                required: false,
+                max_ttl_ms: None,
+            },
+            limits: Limits {
+                timeout_ms: 10_000,
+                max_bytes_in: 1_024,
+                max_bytes_out: 1_024,
+                max_files: 0,
+                max_depth: 1,
+                max_concurrency: 1,
+            },
+            idempotency: IdempoKind::None,
+            concurrency: ConcurrencyKind::Parallel,
+        }
+    }
+
     #[tokio::test]
     async fn embed_endpoint_returns_vectors() {
-        let app = build_test_router();
+        let (app, _, _) = build_test_router();
 
         let request = Request::builder()
             .method("POST")
@@ -855,7 +1450,7 @@ mod tests {
 
     #[tokio::test]
     async fn rerank_endpoint_orders_candidates() {
-        let app = build_test_router();
+        let (app, _, _) = build_test_router();
 
         let request = Request::builder()
             .method("POST")
@@ -890,7 +1485,7 @@ mod tests {
 
     #[tokio::test]
     async fn embed_requires_authorization() {
-        let app = build_test_router();
+        let (app, _, _) = build_test_router();
 
         let request = Request::builder()
             .method("POST")
@@ -911,5 +1506,255 @@ mod tests {
 
         let json = json_body(response).await;
         assert_eq!(json["code"], "AUTH.UNAUTHENTICATED");
+    }
+
+    #[tokio::test]
+    async fn chat_records_tool_plan_when_plan_id_present() {
+        let (app, plan_store, _) = build_test_router();
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/v1/chat")
+            .header(CONTENT_TYPE, "application/json")
+            .header("Authorization", "Bearer user-1@tenant-a")
+            .body(Body::from(
+                json!({
+                    "model_id": "local:echo",
+                    "messages": [
+                        {
+                            "role": "User",
+                            "segments": [
+                                { "Text": { "text": "hello" } }
+                            ]
+                        }
+                    ],
+                    "metadata": {
+                        "plan_id": "case-chat-1"
+                    }
+                })
+                .to_string(),
+            ))
+            .expect("build request");
+
+        let response = app.oneshot(request).await.expect("router call");
+        assert_eq!(response.status(), StatusCode::OK);
+        let stored = plan_store.get(&TenantId("tenant-a".into()), "case-chat-1");
+        assert!(stored.is_some());
+    }
+
+    #[tokio::test]
+    async fn plan_handler_returns_plan_payload() {
+        let (app, plan_store, _) = build_test_router();
+
+        let chat_request = Request::builder()
+            .method("POST")
+            .uri("/v1/chat")
+            .header(CONTENT_TYPE, "application/json")
+            .header("Authorization", "Bearer user-1@tenant-a")
+            .body(Body::from(
+                json!({
+                    "model_id": "local:echo",
+                    "messages": [
+                        {
+                            "role": "User",
+                            "segments": [
+                                { "Text": { "text": "hello" } }
+                            ]
+                        }
+                    ],
+                    "metadata": {
+                        "plan_id": "case-chat-2"
+                    }
+                })
+                .to_string(),
+            ))
+            .expect("build request");
+
+        let chat_response = app.clone().oneshot(chat_request).await.expect("chat call");
+        assert_eq!(chat_response.status(), StatusCode::OK);
+
+        let stored = plan_store.get(&TenantId("tenant-a".into()), "case-chat-2");
+        assert!(stored.is_some());
+
+        let get_request = Request::builder()
+            .method("GET")
+            .uri("/v1/plan/case-chat-2")
+            .header("Authorization", "Bearer user-1@tenant-a")
+            .body(Body::empty())
+            .expect("build get request");
+
+        let response = app.clone().oneshot(get_request).await.expect("plan call");
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = json_body(response).await;
+        assert_eq!(body["plan_id"], "case-chat-2");
+        assert!(body["steps"].is_array());
+    }
+
+    #[tokio::test]
+    async fn plan_list_and_delete_behave() {
+        let (app, _, _) = build_test_router();
+
+        // Create a plan via chat
+        let chat_request = Request::builder()
+            .method("POST")
+            .uri("/v1/chat")
+            .header(CONTENT_TYPE, "application/json")
+            .header("Authorization", "Bearer user-2@tenant-b")
+            .body(Body::from(
+                json!({
+                    "model_id": "local:echo",
+                    "messages": [
+                        {
+                            "role": "User",
+                            "segments": [
+                                { "Text": { "text": "hi" } }
+                            ]
+                        }
+                    ],
+                    "metadata": {
+                        "plan_id": "case-chat-3"
+                    }
+                })
+                .to_string(),
+            ))
+            .expect("build chat request");
+        let chat_response = app.clone().oneshot(chat_request).await.expect("chat call");
+        assert_eq!(chat_response.status(), StatusCode::OK);
+
+        // List plans for tenant-b
+        let list_request = Request::builder()
+            .method("GET")
+            .uri("/v1/plan")
+            .header("Authorization", "Bearer user-2@tenant-b")
+            .body(Body::empty())
+            .expect("build list request");
+        let list_response = app.clone().oneshot(list_request).await.expect("list call");
+        assert_eq!(list_response.status(), StatusCode::OK);
+        let list_body = json_body(list_response).await;
+        let plans = list_body["plans"].as_array().expect("plans array");
+        assert_eq!(plans.len(), 1);
+        assert_eq!(plans[0]["plan_id"], "case-chat-3");
+        assert_eq!(plans[0]["step_count"].as_u64().unwrap(), 0);
+
+        // Delete the plan
+        let delete_request = Request::builder()
+            .method("DELETE")
+            .uri("/v1/plan/case-chat-3")
+            .header("Authorization", "Bearer user-2@tenant-b")
+            .body(Body::empty())
+            .expect("build delete request");
+        let delete_response = app
+            .clone()
+            .oneshot(delete_request)
+            .await
+            .expect("delete call");
+        assert_eq!(delete_response.status(), StatusCode::OK);
+
+        // Ensure subsequent get is not found
+        let get_request = Request::builder()
+            .method("GET")
+            .uri("/v1/plan/case-chat-3")
+            .header("Authorization", "Bearer user-2@tenant-b")
+            .body(Body::empty())
+            .expect("build get request");
+        let get_response = app.clone().oneshot(get_request).await.expect("get call");
+        assert_eq!(get_response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn plan_execute_runs_tool() {
+        let (app, plan_store, tool_registry) = build_test_router();
+
+        let tenant = TenantId("tenant-c".into());
+        plan_store.record(
+            &tenant,
+            "case-exec-1",
+            vec![ToolCallProposal {
+                name: "demo.tmp".into(),
+                call_id: Id("call-demo".into()),
+                arguments: json!({ "size_bytes": 64 }),
+            }],
+        );
+
+        tool_registry
+            .upsert(&tenant, sample_manifest("demo.tmp"))
+            .await
+            .expect("register tool");
+
+        let exec_request = Request::builder()
+            .method("POST")
+            .uri("/v1/plan/case-exec-1/execute")
+            .header("Authorization", "Bearer user-3@tenant-c")
+            .body(Body::empty())
+            .expect("build execute request");
+
+        let response = app
+            .clone()
+            .oneshot(exec_request)
+            .await
+            .expect("execute call");
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = json_body(response).await;
+        assert_eq!(body["plan_id"], "case-exec-1");
+        let results = body["results"].as_array().expect("results array");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0]["status"], "ok");
+        assert!(results[0]["output"]["simulated"].as_bool().unwrap_or(false));
+
+        // Plan should be removed after execution
+        assert!(plan_store.get(&tenant, "case-exec-1").is_none());
+    }
+
+    #[tokio::test]
+    async fn explain_handler_returns_record() {
+        let (app, _, _) = build_test_router();
+
+        let chat_request = Request::builder()
+            .method("POST")
+            .uri("/v1/chat")
+            .header(CONTENT_TYPE, "application/json")
+            .header("Authorization", "Bearer user-4@tenant-d")
+            .body(Body::from(
+                json!({
+                    "model_id": "local:echo",
+                    "messages": [
+                        {
+                            "role": "User",
+                            "segments": [
+                                { "Text": { "text": "explain" } }
+                            ]
+                        }
+                    ],
+                    "metadata": {
+                        "plan_id": "case-chat-4"
+                    }
+                })
+                .to_string(),
+            ))
+            .expect("build chat request");
+
+        let chat_response = app.clone().oneshot(chat_request).await.expect("chat call");
+        assert_eq!(chat_response.status(), StatusCode::OK);
+        let chat_body = json_body(chat_response).await;
+        let explain_id = chat_body["provider_meta"]["explain_id"]
+            .as_str()
+            .expect("explain id present")
+            .to_string();
+
+        let explain_request = Request::builder()
+            .method("GET")
+            .uri(format!("/v1/explain/{explain_id}"))
+            .header("Authorization", "Bearer user-4@tenant-d")
+            .body(Body::empty())
+            .expect("build explain request");
+
+        let explain_response = app.oneshot(explain_request).await.expect("explain call");
+        assert_eq!(explain_response.status(), StatusCode::OK);
+        let explain_body = json_body(explain_response).await;
+        assert_eq!(explain_body["explain_id"], explain_id);
+        assert_eq!(explain_body["plan_id"], "case-chat-4");
+        assert_eq!(explain_body["provider"], "local");
     }
 }

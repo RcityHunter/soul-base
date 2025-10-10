@@ -2,6 +2,7 @@ use crate::errors::LlmError;
 use crate::jsonsafe::StructOutPolicy;
 use crate::model::*;
 use futures_core::Stream;
+use jsonschema::JSONSchema;
 use serde::{Deserialize, Serialize};
 use soulbase_tools::prelude::{SafetyClass, SideEffect, ToolManifest};
 
@@ -162,6 +163,46 @@ pub trait ChatModel: Send + Sync {
         req: ChatRequest,
         enforce: &StructOutPolicy,
     ) -> Result<Self::Stream, LlmError>;
+}
+
+#[cfg(feature = "schema_json")]
+fn schema_to_value(schema: &MaybeSchema) -> Result<serde_json::Value, LlmError> {
+    serde_json::to_value(schema)
+        .map_err(|err| LlmError::schema(&format!("json schema encode: {err}")))
+}
+
+#[cfg(not(feature = "schema_json"))]
+fn schema_to_value(schema: &MaybeSchema) -> Result<serde_json::Value, LlmError> {
+    Ok(schema.clone())
+}
+
+impl ResponseFormat {
+    pub fn validate_schema(&self, value: &serde_json::Value) -> Result<(), LlmError> {
+        if self.kind != ResponseKind::JsonSchema {
+            return Ok(());
+        }
+
+        let schema = self.json_schema.as_ref().ok_or_else(|| {
+            LlmError::schema("json_schema response format requires json_schema payload")
+        })?;
+
+        let schema_value = schema_to_value(schema)?;
+        let compiled = JSONSchema::compile(&schema_value)
+            .map_err(|err| LlmError::schema(&format!("json schema compile: {err}")))?;
+
+        if let Err(errors) = compiled.validate(value) {
+            let message = errors
+                .into_iter()
+                .map(|err| err.to_string())
+                .collect::<Vec<_>>()
+                .join("; ");
+            return Err(LlmError::schema(&format!(
+                "json schema validation failed: {message}"
+            )));
+        }
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]

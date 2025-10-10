@@ -3,7 +3,7 @@
 use std::{
     collections::HashMap,
     sync::Arc,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use async_stream::try_stream;
@@ -14,7 +14,10 @@ use reqwest::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tokio::sync::Semaphore;
+use tokio::{
+    sync::{Mutex, Semaphore},
+    time::{sleep, Duration as TokioDuration, Instant},
+};
 
 use crate::{
     chat::{ChatDelta, ChatRequest, ChatResponse, ResponseFormat, ResponseKind, ToolSpec},
@@ -39,6 +42,7 @@ pub struct OpenAiConfig {
     pub request_timeout: Duration,
     pub model_aliases: HashMap<String, String>,
     pub max_concurrent_requests: usize,
+    pub request_rate_per_minute: Option<u32>,
 }
 
 impl OpenAiConfig {
@@ -53,6 +57,7 @@ impl OpenAiConfig {
             request_timeout: Duration::from_secs(30),
             model_aliases: HashMap::new(),
             max_concurrent_requests: 8,
+            request_rate_per_minute: None,
         })
     }
 
@@ -86,6 +91,11 @@ impl OpenAiConfig {
         self
     }
 
+    pub fn with_rate_limit(mut self, rpm: u32) -> Self {
+        self.request_rate_per_minute = Some(rpm.max(1));
+        self
+    }
+
     pub fn with_alias(mut self, alias: impl Into<String>, target: impl Into<String>) -> Self {
         self.model_aliases.insert(alias.into(), target.into());
         self
@@ -98,6 +108,7 @@ struct OpenAiShared {
     limiter: Arc<Semaphore>,
     chat_url: Url,
     embed_url: Url,
+    rate_limiter: Option<RateLimiter>,
 }
 
 impl OpenAiShared {
@@ -157,6 +168,9 @@ impl OpenAiProviderFactory {
             .map_err(|err| LlmError::unknown(&format!("openai embed url join failed: {err}")))?;
 
         let limiter = Arc::new(Semaphore::new(config.max_concurrent_requests));
+        let rate_limiter = config
+            .request_rate_per_minute
+            .map(RateLimiter::per_minute);
 
         Ok(Self {
             shared: Arc::new(OpenAiShared {
@@ -164,6 +178,7 @@ impl OpenAiProviderFactory {
                 chat_url,
                 embed_url,
                 limiter,
+                rate_limiter,
                 config,
             }),
         })
@@ -553,6 +568,10 @@ impl crate::chat::ChatModel for OpenAiChatModel {
                 .await
                 .map_err(|err| LlmError::unknown(&format!("openai limiter closed: {err}")))?;
 
+            if let Some(rate) = shared.rate_limiter.as_ref() {
+                rate.acquire().await;
+            }
+
             let mut request_builder = shared
                 .client
                 .post(shared.chat_url.clone())
@@ -700,15 +719,19 @@ impl crate::chat::ChatModel for OpenAiChatModel {
                 }
             }
 
-            if matches!(
-                request
-                    .response_format
-                    .as_ref()
-                    .map(|f| &f.kind),
-                Some(ResponseKind::Json | ResponseKind::JsonSchema)
-            ) && !aggregated_text.is_empty()
-            {
-                enforce_json(&aggregated_text, &policy)?;
+            if !aggregated_text.is_empty() {
+                if let Some(format) = request.response_format.as_ref() {
+                    match format.kind {
+                        ResponseKind::Json => {
+                            let _ = enforce_json(&aggregated_text, &policy)?;
+                        }
+                        ResponseKind::JsonSchema => {
+                            let value = enforce_json(&aggregated_text, &policy)?;
+                            format.validate_schema(&value)?;
+                        }
+                        ResponseKind::Text => {}
+                    }
+                }
             }
 
             let usage = usage_final.unwrap_or(Usage {
@@ -761,6 +784,10 @@ impl EmbedModel for OpenAiEmbedModel {
             model: &self.model,
             input: items.iter().map(|item| item.text.clone()).collect(),
         };
+
+        if let Some(rate) = self.shared.rate_limiter.as_ref() {
+            rate.acquire().await;
+        }
 
         let response = self
             .shared
@@ -870,6 +897,10 @@ impl OpenAiChatModel {
             .await
             .map_err(|err| LlmError::unknown(&format!("openai limiter closed: {err}")))?;
 
+        if let Some(rate) = self.shared.rate_limiter.as_ref() {
+            rate.acquire().await;
+        }
+
         let mut request = self
             .shared
             .client
@@ -892,6 +923,64 @@ impl OpenAiChatModel {
             .map_err(|err| {
                 LlmError::provider_unavailable(&format!("openai response decode: {err}"))
             })
+    }
+}
+
+#[derive(Clone)]
+struct RateLimiter {
+    state: Arc<Mutex<RateLimitState>>,
+    capacity: u32,
+    refill: TokioDuration,
+}
+
+struct RateLimitState {
+    tokens: u32,
+    last_refill: Instant,
+}
+
+impl RateLimiter {
+    fn new(capacity: u32, interval: TokioDuration) -> Self {
+        Self {
+            state: Arc::new(Mutex::new(RateLimitState {
+                tokens: capacity,
+                last_refill: Instant::now(),
+            })),
+            capacity,
+            refill: interval,
+        }
+    }
+
+    fn per_minute(rpm: u32) -> Self {
+        Self::new(rpm, TokioDuration::from_secs(60))
+    }
+
+    async fn acquire(&self) {
+        loop {
+            let mut guard = self.state.lock().await;
+            let now = Instant::now();
+            if guard.tokens == 0 {
+                let elapsed = now.saturating_duration_since(guard.last_refill);
+                if elapsed >= self.refill {
+                    let intervals = (elapsed.as_secs_f64() / self.refill.as_secs_f64()).floor() as u32;
+                    if intervals > 0 {
+                        guard.tokens = (guard.tokens + intervals * self.capacity).min(self.capacity);
+                        guard.last_refill = now;
+                    }
+                }
+            }
+
+            if guard.tokens > 0 {
+                guard.tokens -= 1;
+                return;
+            }
+
+            let wait = self
+                .refill
+                .checked_sub(now.saturating_duration_since(guard.last_refill))
+                .unwrap_or_else(|| TokioDuration::from_millis(10));
+            drop(guard);
+            sleep(wait).await;
+        }
     }
 }
 
@@ -1109,11 +1198,17 @@ fn build_chat_response(
     let message = convert_inbound_message(choice.message)?;
     let text = aggregate_text(&message);
 
-    if matches!(
-        request.response_format.as_ref().map(|f| &f.kind),
-        Some(ResponseKind::Json | ResponseKind::JsonSchema)
-    ) {
-        enforce_json(&text, enforce)?;
+    if let Some(format) = request.response_format.as_ref() {
+        match format.kind {
+            ResponseKind::Json => {
+                let _ = enforce_json(&text, enforce)?;
+            }
+            ResponseKind::JsonSchema => {
+                let value = enforce_json(&text, enforce)?;
+                format.validate_schema(&value)?;
+            }
+            ResponseKind::Text => {}
+        }
     }
 
     let usage = response

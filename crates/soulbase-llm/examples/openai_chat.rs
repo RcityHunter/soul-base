@@ -1,7 +1,11 @@
+#[cfg(feature = "provider-openai")]
 use futures_util::StreamExt;
+#[cfg(feature = "provider-openai")]
 use soulbase_llm::prelude::*;
+#[cfg(feature = "provider-openai")]
 use std::error::Error;
 
+#[cfg(feature = "provider-openai")]
 fn build_request(model_id: &str, prompt: &str) -> ChatRequest {
     ChatRequest {
         model_id: model_id.to_string(),
@@ -102,10 +106,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+#[cfg(feature = "provider-openai")]
 trait SegmentExt {
     fn as_text(&self) -> Option<&str>;
 }
 
+#[cfg(feature = "provider-openai")]
 impl SegmentExt for ContentSegment {
     fn as_text(&self) -> Option<&str> {
         match self {
