@@ -21,6 +21,18 @@ mod openai;
 #[cfg(feature = "provider-openai")]
 pub use openai::{OpenAiConfig, OpenAiProviderFactory};
 
+#[cfg(feature = "provider-claude")]
+pub mod claude;
+
+#[cfg(feature = "provider-claude")]
+pub use claude::{ClaudeConfig, ClaudeProviderFactory};
+
+#[cfg(feature = "provider-gemini")]
+pub mod gemini;
+
+#[cfg(feature = "provider-gemini")]
+pub use gemini::{GeminiConfig, GeminiProviderFactory};
+
 pub struct ProviderCfg {
     pub name: String,
 }

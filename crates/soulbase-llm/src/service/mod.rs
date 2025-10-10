@@ -3,7 +3,7 @@ use std::{
     convert::Infallible,
     net::SocketAddr,
     sync::{Arc, Mutex},
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use axum::{
@@ -24,7 +24,11 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use soulbase_errors::prelude::codes;
-#[cfg(feature = "provider-openai")]
+#[cfg(any(
+    feature = "provider-openai",
+    feature = "provider-claude",
+    feature = "provider-gemini"
+))]
 use soulbase_errors::prelude::PublicErrorView;
 use soulbase_sandbox::prelude::{PolicyConfig, Sandbox};
 use soulbase_tools::errors::ToolError;
@@ -45,6 +49,10 @@ use soulbase_interceptors::prelude::*;
 use soulbase_observe::prelude::{Meter, MeterRegistry, MetricKind, MetricSpec};
 
 use crate::prelude::*;
+#[cfg(feature = "provider-claude")]
+use crate::{ClaudeConfig, ClaudeProviderFactory};
+#[cfg(feature = "provider-gemini")]
+use crate::{GeminiConfig, GeminiProviderFactory};
 use crate::{LocalProviderFactory, Registry};
 #[cfg(feature = "provider-openai")]
 use crate::{OpenAiConfig, OpenAiProviderFactory};
@@ -1165,7 +1173,7 @@ fn install_providers(registry: &mut Registry) {
             let mut cfg = match OpenAiConfig::new(api_key) {
                 Ok(cfg) => cfg,
                 Err(err) => {
-                    log_provider_error("invalid openai config", err.into_inner().to_public());
+                    log_provider_error("openai", "invalid config", err.into_inner().to_public());
                     return;
                 }
             };
@@ -1189,9 +1197,11 @@ fn install_providers(registry: &mut Registry) {
 
             match OpenAiProviderFactory::new(cfg) {
                 Ok(factory) => factory.install(registry),
-                Err(err) => {
-                    log_provider_error("openai provider init failed", err.into_inner().to_public())
-                }
+                Err(err) => log_provider_error(
+                    "openai",
+                    "provider init failed",
+                    err.into_inner().to_public(),
+                ),
             }
         } else {
             warn!("OPENAI_API_KEY not set; only local provider available");
@@ -1201,11 +1211,167 @@ fn install_providers(registry: &mut Registry) {
     {
         warn!("provider-openai feature disabled; only local provider available");
     }
+
+    #[cfg(feature = "provider-claude")]
+    {
+        if let Ok(api_key) = std::env::var("ANTHROPIC_API_KEY") {
+            let mut cfg = match ClaudeConfig::new(api_key) {
+                Ok(cfg) => cfg,
+                Err(err) => {
+                    log_provider_error("claude", "invalid config", err.into_inner().to_public());
+                    return;
+                }
+            };
+
+            if let Ok(base_url) = std::env::var("ANTHROPIC_BASE_URL") {
+                cfg = match cfg.with_base_url(base_url) {
+                    Ok(cfg) => cfg,
+                    Err(err) => {
+                        log_provider_error(
+                            "claude",
+                            "invalid base url",
+                            err.into_inner().to_public(),
+                        );
+                        return;
+                    }
+                };
+            }
+
+            if let Ok(version) = std::env::var("ANTHROPIC_VERSION") {
+                cfg = cfg.with_version(version);
+            }
+
+            if let Ok(mapping) = std::env::var("CLAUDE_MODEL_ALIAS") {
+                for part in mapping.split(',') {
+                    if let Some((alias, model)) = part.split_once(':') {
+                        cfg = cfg.with_alias(alias.trim(), model.trim());
+                    }
+                }
+            }
+
+            if let Ok(default_tokens) = std::env::var("CLAUDE_DEFAULT_MAX_TOKENS")
+                .ok()
+                .and_then(|v| v.parse::<u32>().ok())
+            {
+                cfg = cfg.with_default_max_tokens(default_tokens);
+            }
+
+            if let Ok(concurrency) = std::env::var("CLAUDE_MAX_CONCURRENCY")
+                .ok()
+                .and_then(|v| v.parse::<usize>().ok())
+            {
+                cfg = cfg.with_max_concurrency(concurrency);
+            }
+
+            if let Ok(rpm) = std::env::var("ANTHROPIC_RATE_LIMIT_RPM")
+                .ok()
+                .and_then(|v| v.parse::<u32>().ok())
+            {
+                cfg = cfg.with_rate_limit(rpm);
+            }
+
+            if let Ok(beta_headers) = std::env::var("ANTHROPIC_BETA_HEADERS") {
+                for header in beta_headers.split(',') {
+                    let header = header.trim();
+                    if !header.is_empty() {
+                        cfg = cfg.with_beta_header(header.to_string());
+                    }
+                }
+            }
+
+            match ClaudeProviderFactory::new(cfg) {
+                Ok(factory) => factory.install(registry),
+                Err(err) => log_provider_error(
+                    "claude",
+                    "provider init failed",
+                    err.into_inner().to_public(),
+                ),
+            }
+        } else {
+            warn!("ANTHROPIC_API_KEY not set; Claude provider disabled");
+        }
+    }
+    #[cfg(not(feature = "provider-claude"))]
+    {
+        warn!("provider-claude feature disabled; enable to register Anthropic provider");
+    }
+
+    #[cfg(feature = "provider-gemini")]
+    {
+        if let Ok(api_key) = std::env::var("GEMINI_API_KEY") {
+            let mut cfg = match GeminiConfig::new(api_key) {
+                Ok(cfg) => cfg,
+                Err(err) => {
+                    log_provider_error("gemini", "invalid config", err.into_inner().to_public());
+                    return;
+                }
+            };
+
+            if let Ok(base_url) = std::env::var("GEMINI_BASE_URL") {
+                cfg = match cfg.with_base_url(base_url) {
+                    Ok(cfg) => cfg,
+                    Err(err) => {
+                        log_provider_error(
+                            "gemini",
+                            "invalid base url",
+                            err.into_inner().to_public(),
+                        );
+                        return;
+                    }
+                };
+            }
+
+            if let Ok(version) = std::env::var("GEMINI_API_VERSION") {
+                cfg = cfg.with_version(version);
+            }
+
+            if let Ok(timeout_ms) = std::env::var("GEMINI_TIMEOUT_MS")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+            {
+                cfg = cfg.with_timeout(Duration::from_millis(timeout_ms));
+            }
+
+            if let Ok(concurrency) = std::env::var("GEMINI_MAX_CONCURRENCY")
+                .ok()
+                .and_then(|v| v.parse::<usize>().ok())
+            {
+                cfg = cfg.with_max_concurrency(concurrency);
+            }
+
+            if let Ok(mapping) = std::env::var("GEMINI_MODEL_ALIAS") {
+                for part in mapping.split(',') {
+                    if let Some((alias, model)) = part.split_once(':') {
+                        cfg = cfg.with_alias(alias.trim(), model.trim());
+                    }
+                }
+            }
+
+            match GeminiProviderFactory::new(cfg) {
+                Ok(factory) => factory.install(registry),
+                Err(err) => log_provider_error(
+                    "gemini",
+                    "provider init failed",
+                    err.into_inner().to_public(),
+                ),
+            }
+        } else {
+            warn!("GEMINI_API_KEY not set; Gemini provider disabled");
+        }
+    }
+    #[cfg(not(feature = "provider-gemini"))]
+    {
+        warn!("provider-gemini feature disabled; enable to register Gemini provider");
+    }
 }
 
-#[cfg(feature = "provider-openai")]
-fn log_provider_error(context: &str, view: PublicErrorView) {
-    error!(code = %view.code, "{context}: {}", view.message);
+#[cfg(any(
+    feature = "provider-openai",
+    feature = "provider-claude",
+    feature = "provider-gemini"
+))]
+fn log_provider_error(provider: &str, context: &str, view: PublicErrorView) {
+    error!(code = %view.code, "{provider} {context}: {}", view.message);
 }
 
 fn build_chain() -> InterceptorChain {

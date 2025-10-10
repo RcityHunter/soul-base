@@ -1,10 +1,6 @@
 #![cfg(feature = "provider-openai")]
 
-use std::{
-    collections::HashMap,
-    sync::Arc,
-    time::Duration,
-};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use async_stream::try_stream;
 use futures_util::stream::{BoxStream, StreamExt};
@@ -168,9 +164,7 @@ impl OpenAiProviderFactory {
             .map_err(|err| LlmError::unknown(&format!("openai embed url join failed: {err}")))?;
 
         let limiter = Arc::new(Semaphore::new(config.max_concurrent_requests));
-        let rate_limiter = config
-            .request_rate_per_minute
-            .map(RateLimiter::per_minute);
+        let rate_limiter = config.request_rate_per_minute.map(RateLimiter::per_minute);
 
         Ok(Self {
             shared: Arc::new(OpenAiShared {
@@ -961,9 +955,11 @@ impl RateLimiter {
             if guard.tokens == 0 {
                 let elapsed = now.saturating_duration_since(guard.last_refill);
                 if elapsed >= self.refill {
-                    let intervals = (elapsed.as_secs_f64() / self.refill.as_secs_f64()).floor() as u32;
+                    let intervals =
+                        (elapsed.as_secs_f64() / self.refill.as_secs_f64()).floor() as u32;
                     if intervals > 0 {
-                        guard.tokens = (guard.tokens + intervals * self.capacity).min(self.capacity);
+                        guard.tokens =
+                            (guard.tokens + intervals * self.capacity).min(self.capacity);
                         guard.last_refill = now;
                     }
                 }
