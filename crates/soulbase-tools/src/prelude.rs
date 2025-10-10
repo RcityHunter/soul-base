@@ -5,4 +5,6 @@ pub use crate::manifest::{
     ToolId, ToolManifest,
 };
 pub use crate::preflight::{Preflight, PreflightOutput, ToolCall, ToolOrigin};
+#[cfg(feature = "registry_surreal")]
+pub use crate::registry::SurrealToolRegistry;
 pub use crate::registry::{AvailableSpec, InMemoryRegistry, ListFilter, ToolRegistry, ToolState};

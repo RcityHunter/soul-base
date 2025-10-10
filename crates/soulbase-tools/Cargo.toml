@@ -11,6 +11,7 @@ default = ["schema_json"]
 schema_json = ["schemars", "jsonschema"]
 tenant_scoped_registry = []
 idempotency_store_redis = []
+registry_surreal = ["dep:soulbase-storage"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -27,6 +28,7 @@ soulbase-types = { path = "../soulbase-types", version = "1.0.0" }
 soulbase-errors = { path = "../soulbase-errors", version = "1.0.0" }
 soulbase-auth = { path = "../soulbase-auth", version = "1.0.0" }
 soulbase-sandbox = { path = "../soulbase-sandbox", version = "1.0.0" }
+soulbase-storage = { path = "../soulbase-storage", version = "1.0.0", optional = true, features = ["surreal"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

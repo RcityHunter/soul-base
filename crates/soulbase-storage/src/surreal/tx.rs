@@ -7,7 +7,6 @@ use serde_json::Value;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
-use surrealdb::sql::Value as SqlValue;
 use surrealdb::{engine::any::Any, Surreal};
 
 #[derive(Clone)]
@@ -49,7 +48,7 @@ impl QueryExecutor for SurrealTransaction {
         let mut response = prepared
             .await
             .map_err(|err| map_surreal_error(err, "surreal tx query"))?;
-        let rows: Vec<SqlValue> = match response.take(0) {
+        let rows: Vec<Value> = match response.take(0) {
             Ok(rows) => rows,
             Err(err) => {
                 let msg = err.to_string();
@@ -60,7 +59,7 @@ impl QueryExecutor for SurrealTransaction {
                 }
             }
         };
-        let rows_json: Vec<Value> = rows.into_iter().map(|value| value.into_json()).collect();
+        let rows_json = rows;
         record_backend("surreal.tx.query", started.elapsed(), rows_json.len(), None);
         if let Some(first) = rows_json.get(0) {
             println!("tx query debug: {}", first);

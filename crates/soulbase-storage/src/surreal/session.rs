@@ -8,7 +8,6 @@ use async_trait::async_trait;
 use serde_json::Value;
 use std::sync::Arc;
 use std::time::Instant;
-use surrealdb::sql::Value as SqlValue;
 use surrealdb::{engine::any::Any, Surreal};
 
 #[derive(Clone)]
@@ -37,7 +36,7 @@ impl QueryExecutor for SurrealSession {
         let mut response = prepared
             .await
             .map_err(|err| map_surreal_error(err, "surreal query execute"))?;
-        let rows: Vec<SqlValue> = match response.take(0) {
+        let rows: Vec<Value> = match response.take(0) {
             Ok(rows) => rows,
             Err(err) => {
                 let msg = err.to_string();
@@ -48,7 +47,7 @@ impl QueryExecutor for SurrealSession {
                 }
             }
         };
-        let rows_json: Vec<Value> = rows.into_iter().map(|value| value.into_json()).collect();
+        let rows_json = rows;
         let latency = started.elapsed();
         record_backend("surreal.query", latency, rows_json.len(), None);
         Ok(Value::Array(rows_json))

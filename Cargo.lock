@@ -5294,6 +5294,7 @@ dependencies = [
  "soulbase-auth",
  "soulbase-errors",
  "soulbase-sandbox",
+ "soulbase-storage",
  "soulbase-types",
  "tempfile",
  "thiserror 1.0.69",

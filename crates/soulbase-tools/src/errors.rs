@@ -3,6 +3,9 @@ use soulbase_errors::prelude::*;
 use soulbase_sandbox::errors::SandboxError;
 use thiserror::Error;
 
+#[cfg(feature = "registry_surreal")]
+use soulbase_storage::prelude::StorageError;
+
 #[derive(Debug, Error)]
 #[error("{0:?}")]
 pub struct ToolError(pub Box<ErrorObj>);
@@ -62,5 +65,12 @@ impl From<AuthError> for ToolError {
 impl From<SandboxError> for ToolError {
     fn from(err: SandboxError) -> Self {
         ToolError::sandbox(err)
+    }
+}
+
+#[cfg(feature = "registry_surreal")]
+impl From<StorageError> for ToolError {
+    fn from(err: StorageError) -> Self {
+        ToolError(Box::new(err.into_inner()))
     }
 }
