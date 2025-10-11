@@ -22,5 +22,6 @@ fn capability_name(cap: &Capability) -> &'static str {
         Capability::FsList { .. } => "fs_list",
         Capability::NetHttp { .. } => "net_http",
         Capability::TmpUse => "tmp_use",
+        Capability::ProcRun { .. } => "proc_run",
     }
 }

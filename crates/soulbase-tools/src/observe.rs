@@ -1,5 +1,8 @@
-﻿use crate::manifest::ToolId;
+use crate::manifest::ToolId;
 use std::collections::BTreeMap;
+
+#[cfg(feature = "observe")]
+use soulbase_observe::prelude::{LogBuilder, LogLevel, Logger, NoopRedactor, ObserveCtx};
 
 pub fn labels(tenant: &str, tool: &ToolId, code: Option<&str>) -> BTreeMap<&'static str, String> {
     let mut map = BTreeMap::new();
@@ -9,4 +12,45 @@ pub fn labels(tenant: &str, tool: &ToolId, code: Option<&str>) -> BTreeMap<&'sta
         map.insert("code", c.to_string());
     }
     map
+}
+
+#[cfg(feature = "observe")]
+pub fn ctx_for_tool(tenant: &str, tool: &ToolId, action: &str) -> ObserveCtx {
+    let mut ctx = ObserveCtx::for_tenant(tenant.to_string());
+    ctx.resource = Some(tool.0.clone());
+    ctx.action = Some(action.to_string());
+    ctx.subject_kind = Some("tool_invocation".into());
+    ctx
+}
+
+#[cfg(feature = "observe")]
+pub async fn log_invocation(
+    logger: &dyn Logger,
+    ctx: &ObserveCtx,
+    tenant: &str,
+    tool: &ToolId,
+    status: &str,
+    code: Option<&str>,
+    latency_ms: u64,
+    degradation: Option<&str>,
+) {
+    let level = match status {
+        "error" => LogLevel::Error,
+        "degraded" => LogLevel::Warn,
+        _ => LogLevel::Info,
+    };
+
+    let mut builder = LogBuilder::new(level, "tool invocation finished")
+        .label("tenant", tenant.to_string())
+        .label("tool_id", tool.0.clone())
+        .label("status", status.to_string())
+        .field("latency_ms", latency_ms.into());
+    if let Some(code) = code {
+        builder = builder.field("code", code.into());
+    }
+    if let Some(reason) = degradation {
+        builder = builder.field("degradation", reason.into());
+    }
+    let event = builder.finish(ctx, &NoopRedactor::default());
+    logger.log(ctx, event).await;
 }

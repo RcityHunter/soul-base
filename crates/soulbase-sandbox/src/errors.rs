@@ -45,4 +45,22 @@ impl SandboxError {
                 .build(),
         ))
     }
+
+    pub fn schema(msg: &str) -> Self {
+        SandboxError(Box::new(
+            ErrorBuilder::new(codes::SCHEMA_VALIDATION)
+                .user_msg("Sandbox request failed validation.")
+                .dev_msg(msg)
+                .build(),
+        ))
+    }
+
+    pub fn provider(msg: &str) -> Self {
+        SandboxError(Box::new(
+            ErrorBuilder::new(codes::PROVIDER_UNAVAILABLE)
+                .user_msg("Upstream provider unavailable.")
+                .dev_msg(msg)
+                .build(),
+        ))
+    }
 }

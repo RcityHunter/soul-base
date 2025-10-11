@@ -5,6 +5,8 @@ use thiserror::Error;
 
 #[cfg(feature = "registry_surreal")]
 use soulbase_storage::prelude::StorageError;
+#[cfg(feature = "outbox")]
+use soulbase_tx::errors::TxError;
 
 #[derive(Debug, Error)]
 #[error("{0:?}")]
@@ -72,5 +74,17 @@ impl From<SandboxError> for ToolError {
 impl From<StorageError> for ToolError {
     fn from(err: StorageError) -> Self {
         ToolError(Box::new(err.into_inner()))
+    }
+}
+
+#[cfg(feature = "outbox")]
+impl From<TxError> for ToolError {
+    fn from(err: TxError) -> Self {
+        ToolError(Box::new(
+            ErrorBuilder::new(codes::UNKNOWN_INTERNAL)
+                .user_msg("Tool outbox dispatch failed.")
+                .dev_msg(format!("outbox: {}", err))
+                .build(),
+        ))
     }
 }

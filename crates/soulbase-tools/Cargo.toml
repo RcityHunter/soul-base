@@ -7,11 +7,13 @@ description = "Tool SDK / Manifest / Registry / Invocation Protocol for the Soul
 repository = "https://github.com/RcityHunter/soul-base"
 
 [features]
-default = ["schema_json"]
+default = ["schema_json", "outbox"]
 schema_json = ["schemars", "jsonschema"]
 tenant_scoped_registry = []
 idempotency_store_redis = []
 registry_surreal = ["dep:soulbase-storage"]
+observe = ["dep:soulbase-observe"]
+outbox = ["dep:soulbase-tx"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -29,6 +31,8 @@ soulbase-errors = { path = "../soulbase-errors", version = "1.0.0" }
 soulbase-auth = { path = "../soulbase-auth", version = "1.0.0" }
 soulbase-sandbox = { path = "../soulbase-sandbox", version = "1.0.0" }
 soulbase-storage = { path = "../soulbase-storage", version = "1.0.0", optional = true, features = ["surreal"] }
+soulbase-observe = { path = "../soulbase-observe", version = "1.0.0", optional = true }
+soulbase-tx = { path = "../soulbase-tx", version = "1.0.0", optional = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

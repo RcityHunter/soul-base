@@ -1,5 +1,6 @@
 use crate::errors::SandboxError;
 use crate::model::{Budget, ExecOp, Profile};
+use base64::Engine as _;
 use parking_lot::Mutex;
 
 pub struct MemoryBudget {
@@ -34,9 +35,15 @@ impl MemoryBudget {
 
         let bytes_in = match op {
             ExecOp::FsRead { len, .. } => len.map(|l| l as i64).unwrap_or(0),
-            ExecOp::NetHttp { body_b64, .. } => {
-                body_b64.as_ref().map(|b| b.len() as i64).unwrap_or(0)
-            }
+            ExecOp::FsWrite { contents_b64, .. } => decode_length(contents_b64) as i64,
+            ExecOp::NetHttp { body_b64, .. } => body_b64
+                .as_ref()
+                .map(|b| decode_length(b) as i64)
+                .unwrap_or(0),
+            ExecOp::ProcSpawn { stdin_b64, .. } => stdin_b64
+                .as_ref()
+                .map(|s| decode_length(s) as i64)
+                .unwrap_or(0),
             _ => 0,
         };
         state.bytes_in_used += bytes_in;
@@ -46,4 +53,11 @@ impl MemoryBudget {
 
         Ok(())
     }
+}
+
+fn decode_length(encoded: &str) -> usize {
+    base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .map(|bytes| bytes.len())
+        .unwrap_or(0)
 }

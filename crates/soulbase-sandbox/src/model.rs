@@ -22,6 +22,11 @@ pub enum Capability {
         methods: Vec<String>,
     },
     TmpUse,
+    ProcRun {
+        program: String,
+        args: Vec<String>,
+        env_keys: Vec<String>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -117,6 +122,13 @@ pub enum ExecOp {
     TmpAlloc {
         size_bytes: u64,
     },
+    ProcSpawn {
+        program: String,
+        args: Vec<String>,
+        env: HashMap<String, String>,
+        stdin_b64: Option<String>,
+        timeout_ms: Option<u64>,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -143,6 +155,7 @@ impl ExecOp {
             ExecOp::FsList { .. } => "fs_list",
             ExecOp::NetHttp { .. } => "net_http",
             ExecOp::TmpAlloc { .. } => "tmp_alloc",
+            ExecOp::ProcSpawn { .. } => "proc_spawn",
         }
     }
 }

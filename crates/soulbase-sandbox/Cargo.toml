@@ -10,12 +10,13 @@ homepage = "https://github.com/RcityHunter/soul-base"
 documentation = "https://github.com/RcityHunter/soul-base/tree/main/crates/soulbase-sandbox"
 
 [features]
-default = ["exec-fs", "exec-net"]
+default = ["exec-fs", "exec-net", "net-reqwest", "exec-proc"]
 exec-fs = []
 exec-net = []
-net-reqwest = ["reqwest"]
+exec-proc = []
+net-reqwest = ["reqwest", "futures-util"]
 qos = []
-observe = []
+observe = ["dep:soulbase-observe"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -30,12 +31,14 @@ parking_lot = "0.12"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 uuid = { version = "1", features = ["v4"] }
 url = "2"
-tokio = { version = "1", features = ["fs", "io-util", "macros", "rt", "time"] }
+tokio = { version = "1", features = ["fs", "io-util", "macros", "rt", "time", "process"] }
 
 soulbase-types = { path = "../soulbase-types", version = "1.0.0" }
 soulbase-errors = { path = "../soulbase-errors", version = "1.0.0" }
 
-reqwest = { version = "0.12", optional = true, default-features = false, features = ["rustls-tls"] }
+reqwest = { version = "0.12", optional = true, default-features = false, features = ["rustls-tls", "stream"] }
+futures-util = { version = "0.3", optional = true }
+soulbase-observe = { path = "../soulbase-observe", version = "1.0.0", optional = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "fs"] }

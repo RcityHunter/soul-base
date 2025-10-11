@@ -22,6 +22,9 @@ impl PolicyGuard for PolicyGuardDefault {
             ExecOp::FsList { path } => validate_fs(profile, path, CapabilityKind::List),
             ExecOp::NetHttp { method, url, .. } => validate_net(profile, method, url),
             ExecOp::TmpAlloc { .. } => validate_tmp(profile),
+            ExecOp::ProcSpawn {
+                program, args, env, ..
+            } => validate_proc(profile, program, args, env),
         }
     }
 }
@@ -68,6 +71,32 @@ fn validate_tmp(profile: &Profile) -> Result<(), SandboxError> {
         Ok(())
     } else {
         Err(SandboxError::permission("tmp capability not granted"))
+    }
+}
+
+fn validate_proc(
+    profile: &Profile,
+    program: &str,
+    args: &[String],
+    env: &std::collections::HashMap<String, String>,
+) -> Result<(), SandboxError> {
+    let allowed = profile.capabilities.iter().any(|cap| match cap {
+        Capability::ProcRun {
+            program: allowed_program,
+            args: allowed_args,
+            env_keys,
+        } => {
+            allowed_program == program
+                && allowed_args == args
+                && env.keys().all(|key| env_keys.contains(key))
+        }
+        _ => false,
+    });
+
+    if allowed {
+        Ok(())
+    } else {
+        Err(SandboxError::permission("process capability not granted"))
     }
 }
 

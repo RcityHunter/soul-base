@@ -3,13 +3,16 @@ use std::{
     convert::Infallible,
     net::SocketAddr,
     sync::{Arc, Mutex},
-    time::{Duration, Instant},
+    time::Instant,
 };
+
+#[cfg(feature = "provider-gemini")]
+use std::time::Duration;
 
 use axum::{
     body::{to_bytes, Body},
     extract::State,
-    http::{header::CONTENT_TYPE, HeaderMap, Request, StatusCode},
+    http::{header::CONTENT_TYPE, HeaderMap, HeaderValue, Request, StatusCode},
     response::{
         sse::{Event, KeepAlive, Sse},
         IntoResponse, Response,
@@ -561,6 +564,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/plan/:plan_id/execute", post(plan_execute_handler))
         .route("/v1/plan/:plan_id", delete(plan_delete_handler))
         .route("/v1/explain/:explain_id", get(explain_handler))
+        .route("/v1/explain/:explain_id/view", get(explain_view_handler))
         .with_state(state)
 }
 
@@ -858,13 +862,166 @@ async fn explain_handler(State(state): State<AppState>, req: Request<Body>) -> R
     .await
 }
 
+async fn explain_view_handler(State(state): State<AppState>, req: Request<Body>) -> Response {
+    let store = state.explain_store.clone();
+
+    let response = handle_with_chain(req, &state.chain, move |ctx, preq| {
+        let store = store.clone();
+        let tenant = ctx
+            .subject
+            .as_ref()
+            .map(|subject| subject.tenant.clone())
+            .ok_or_else(|| InterceptError::deny_policy("tenant context missing"));
+
+        Box::pin(async move {
+            let tenant = tenant?;
+            let raw_path = preq.path();
+            let explain_id = raw_path
+                .strip_prefix("/v1/explain/")
+                .filter(|segment| !segment.is_empty())
+                .ok_or_else(|| InterceptError::schema("explain id missing"))?;
+
+            let record = store.get(explain_id).ok_or_else(|| {
+                InterceptError::from_public(codes::STORAGE_NOT_FOUND, "Explain record not found")
+            })?;
+
+            if record.tenant != tenant {
+                return Err(InterceptError::deny_policy(
+                    "Explain record not owned by tenant",
+                ));
+            }
+
+            let html = render_explain_html(&record);
+            Ok(json!({ "html": html }))
+        })
+    })
+    .await;
+
+    if !response.status().is_success() {
+        return response;
+    }
+
+    let (mut parts, body) = response.into_parts();
+    let bytes = match to_bytes(body, 1_048_576).await {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            return intercept_error(InterceptError::internal(&format!(
+                "read explain view payload: {err}"
+            )));
+        }
+    };
+
+    let value: serde_json::Value = match serde_json::from_slice(&bytes) {
+        Ok(value) => value,
+        Err(err) => {
+            return intercept_error(InterceptError::internal(&format!(
+                "decode explain view payload: {err}"
+            )));
+        }
+    };
+
+    let html = match value.get("html").and_then(|v| v.as_str()) {
+        Some(html) => html.to_string(),
+        None => {
+            return intercept_error(InterceptError::internal(
+                "invalid explain view payload",
+            ));
+        }
+    };
+
+    parts.headers.insert(
+        CONTENT_TYPE,
+        HeaderValue::from_static("text/html; charset=utf-8"),
+    );
+
+    Response::from_parts(parts, Body::from(html))
+}
+
+fn render_explain_html(record: &ExplainRecord) -> String {
+    let metadata_pretty = serde_json::to_string_pretty(&record.metadata)
+        .unwrap_or_else(|_| "<unable to render metadata>".into());
+    let degradation_summary = extract_degradation_summary(&record.metadata);
+    let mut html = String::new();
+    html.push_str("<html><head><title>Explain Record</title><style>body{font-family:monospace;padding:1.5rem;}h1{font-size:1.4rem;}pre{background:#f5f5f5;padding:1rem;border-radius:6px;overflow:auto;}table{border-collapse:collapse;margin-bottom:1rem;}td{padding:0.25rem 0.75rem;}</style></head><body>");
+    html.push_str("<h1>Explain Record</h1>");
+    html.push_str(&format!(
+        "<table><tr><td><strong>ID</strong></td><td>{}</td></tr><tr><td><strong>Provider</strong></td><td>{}</td></tr><tr><td><strong>Created</strong></td><td>{}</td></tr>",
+        escape_html(&record.explain_id),
+        escape_html(&record.provider),
+        record.created_at.to_rfc2822()
+    ));
+
+    if let Some(plan_id) = &record.plan_id {
+        html.push_str(&format!(
+            "<tr><td><strong>Plan ID</strong></td><td>{}</td></tr>",
+            escape_html(plan_id)
+        ));
+    }
+
+    if let Some(fingerprint) = &record.fingerprint {
+        html.push_str(&format!(
+            "<tr><td><strong>Fingerprint</strong></td><td>{}</td></tr>",
+            escape_html(fingerprint)
+        ));
+    }
+
+    if let Some(summary) = degradation_summary {
+        html.push_str(&format!(
+            "<tr><td><strong>Degradation</strong></td><td>{}</td></tr>",
+            escape_html(&summary)
+        ));
+    }
+
+    html.push_str("</table>");
+
+    html.push_str("<h2>Metadata</h2>");
+    html.push_str("<pre>");
+    html.push_str(&escape_html(&metadata_pretty));
+    html.push_str("</pre>");
+    html.push_str("</body></html>");
+    html
+}
+
+fn escape_html(input: &str) -> String {
+    input
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
+}
+
+fn extract_degradation_summary(metadata: &serde_json::Value) -> Option<String> {
+    metadata.get("degradation").and_then(|deg| {
+        if let Some(obj) = deg.as_object() {
+            if let Some(reasons) = obj.get("reasons").and_then(|r| r.as_array()) {
+                Some(
+                    reasons
+                        .iter()
+                        .filter_map(|v| v.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                )
+            } else {
+                obj.get("reason")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+            }
+        } else {
+            deg.as_str().map(|s| s.to_string())
+        }
+    })
+}
+
 async fn plan_execute_handler(State(state): State<AppState>, req: Request<Body>) -> Response {
     let store = state.plan_store.clone();
     let invoker = state.tool_invoker.clone();
+    let explain_store = state.explain_store.clone();
 
     handle_with_chain(req, &state.chain, move |ctx, preq| {
         let store = store.clone();
         let invoker = invoker.clone();
+        let explain_store = explain_store.clone();
         let subject = ctx
             .subject
             .clone()
@@ -884,7 +1041,8 @@ async fn plan_execute_handler(State(state): State<AppState>, req: Request<Body>)
                 InterceptError::from_public(codes::STORAGE_NOT_FOUND, "Plan not found")
             })?;
 
-            let mut results = Vec::new();
+            let mut results: Vec<serde_json::Value> = Vec::new();
+            let mut overall_degradation: Vec<String> = Vec::new();
 
             for step in plan.iter() {
                 let tool_id = ToolId(step.name.clone());
@@ -934,23 +1092,57 @@ async fn plan_execute_handler(State(state): State<AppState>, req: Request<Body>)
                     InvokeStatus::Error => "error",
                 };
 
-                results.push(json!({
+                if let Some(ref reasons) = invoke_result.degradation {
+                    for reason in reasons {
+                        if !overall_degradation.contains(reason) {
+                            overall_degradation.push(reason.clone());
+                        }
+                    }
+                }
+
+                let mut entry = json!({
                     "call_id": step.call_id.0.clone(),
                     "tool_id": step.name.clone(),
                     "status": status_str,
                     "output": invoke_result.output,
                     "error_code": invoke_result.error_code,
                     "evidence_ref": invoke_result.evidence_ref.map(|id| id.0),
-                }));
+                });
+
+                if let Some(reasons) = invoke_result.degradation {
+                    if let Some(obj) = entry.as_object_mut() {
+                        obj.insert("degradation".into(), json!({ "reasons": reasons }));
+                    }
+                }
+
+                results.push(entry);
             }
 
             // Remove plan after successful execution to avoid replays.
             store.remove(&tenant, plan_id);
 
-            Ok(json!({
+            let mut response = json!({
                 "plan_id": plan_id,
                 "results": results,
-            }))
+            });
+
+            if !overall_degradation.is_empty() {
+                if let Some(obj) = response.as_object_mut() {
+                    obj.insert(
+                        "degradation".into(),
+                        json!({ "reasons": overall_degradation.clone() }),
+                    );
+                }
+            }
+
+            let explain_id =
+                explain_store.record(&tenant, Some(plan_id), "tool-plan", None, response.clone());
+
+            if let Some(obj) = response.as_object_mut() {
+                obj.insert("explain_id".into(), json!(explain_id));
+            }
+
+            Ok(response)
         })
     })
     .await
