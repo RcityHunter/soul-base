@@ -5,6 +5,7 @@ use soulbase_auth::AuthFacade;
 use soulbase_sandbox::prelude::{Mappings, PolicyConfig, Sandbox};
 use soulbase_tools::prelude::*;
 use soulbase_tx::memory::InMemoryOutboxStore;
+use soulbase_tx::outbox::OutboxStore;
 use soulbase_types::prelude::*;
 use std::sync::{Arc, Mutex};
 use tempfile::tempdir;
@@ -214,7 +215,7 @@ async fn register_preflight_and_invoke_tools() {
     assert_eq!(fs_out.get("size").and_then(|v| v.as_u64()).unwrap(), 11);
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct SpyQuota {
     records: Arc<Mutex<Vec<(QuotaKey, u64)>>>,
     outcome: QuotaOutcome,
