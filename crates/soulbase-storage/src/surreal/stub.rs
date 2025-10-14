@@ -1,11 +1,15 @@
 use crate::errors::StorageError;
+use crate::model::{Entity, Page, QueryParams};
 use crate::spi::datastore::Datastore;
 use crate::spi::migrate::{MigrationScript, Migrator};
 use crate::spi::query::QueryExecutor;
+use crate::spi::repo::Repository;
 use crate::spi::session::Session;
 use crate::spi::tx::Transaction;
 use async_trait::async_trait;
 use serde_json::Value;
+use soulbase_types::prelude::TenantId;
+use std::marker::PhantomData;
 
 #[derive(Clone, Default)]
 pub struct SurrealDatastore;
@@ -105,5 +109,64 @@ pub struct SurrealMapper;
 impl SurrealMapper {
     pub fn hydrate<T: serde::de::DeserializeOwned>(value: Value) -> serde_json::Result<T> {
         serde_json::from_value(value)
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct SurrealRepository<E: Entity> {
+    _marker: PhantomData<E>,
+}
+
+impl<E: Entity> SurrealRepository<E> {
+    pub fn new(_: &SurrealDatastore) -> Self {
+        Self {
+            _marker: PhantomData,
+        }
+    }
+}
+
+#[async_trait]
+impl<E> Repository<E> for SurrealRepository<E>
+where
+    E: Entity + Send + Sync,
+{
+    async fn create(&self, _tenant: &TenantId, _entity: &E) -> Result<(), StorageError> {
+        Err(StorageError::unavailable(
+            "Surreal repository requires the `surreal` feature",
+        ))
+    }
+
+    async fn upsert(
+        &self,
+        _tenant: &TenantId,
+        _id: &str,
+        _patch: Value,
+        _session: Option<&str>,
+    ) -> Result<E, StorageError> {
+        Err(StorageError::unavailable(
+            "Surreal repository requires the `surreal` feature",
+        ))
+    }
+
+    async fn get(&self, _tenant: &TenantId, _id: &str) -> Result<Option<E>, StorageError> {
+        Err(StorageError::unavailable(
+            "Surreal repository requires the `surreal` feature",
+        ))
+    }
+
+    async fn select(
+        &self,
+        _tenant: &TenantId,
+        _params: QueryParams,
+    ) -> Result<Page<E>, StorageError> {
+        Err(StorageError::unavailable(
+            "Surreal repository requires the `surreal` feature",
+        ))
+    }
+
+    async fn delete(&self, _tenant: &TenantId, _id: &str) -> Result<(), StorageError> {
+        Err(StorageError::unavailable(
+            "Surreal repository requires the `surreal` feature",
+        ))
     }
 }

@@ -1,5 +1,6 @@
 use super::{
-    binder::QueryBinder, errors::map_surreal_error, observe::record_backend, tx::SurrealTransaction,
+    binder::QueryBinder, errors::map_surreal_error, mapper::SurrealMapper, observe::record_backend,
+    tx::SurrealTransaction,
 };
 use crate::errors::StorageError;
 use crate::spi::query::QueryExecutor;
@@ -36,8 +37,8 @@ impl QueryExecutor for SurrealSession {
         let mut response = prepared
             .await
             .map_err(|err| map_surreal_error(err, "surreal query execute"))?;
-        let rows: Vec<Value> = match response.take(0) {
-            Ok(rows) => rows,
+        let rows: Vec<Value> = match response.take::<Vec<surrealdb::sql::Value>>(0) {
+            Ok(values) => values.into_iter().map(SurrealMapper::to_json).collect(),
             Err(err) => {
                 let msg = err.to_string();
                 if msg.contains("found None") {

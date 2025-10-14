@@ -15,6 +15,8 @@ pub mod migrate;
 #[cfg(feature = "surreal")]
 pub mod observe;
 #[cfg(feature = "surreal")]
+pub mod repo;
+#[cfg(feature = "surreal")]
 pub mod session;
 #[cfg(feature = "surreal")]
 pub mod tx;
@@ -27,6 +29,8 @@ pub use datastore::SurrealDatastore;
 pub use mapper::SurrealMapper;
 #[cfg(feature = "surreal")]
 pub use migrate::SurrealMigrator;
+#[cfg(feature = "surreal")]
+pub use repo::SurrealRepository;
 #[cfg(feature = "surreal")]
 pub use session::SurrealSession;
 #[cfg(feature = "surreal")]

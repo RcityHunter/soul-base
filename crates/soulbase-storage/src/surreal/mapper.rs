@@ -10,6 +10,6 @@ impl SurrealMapper {
 
     #[cfg(feature = "surreal")]
     pub fn to_json(value: surrealdb::sql::Value) -> Value {
-        serde_json::to_value(value).unwrap_or(Value::Null)
+        value.into_json()
     }
 }

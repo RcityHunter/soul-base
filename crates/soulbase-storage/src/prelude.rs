@@ -6,3 +6,6 @@ pub use crate::spi::*;
 pub use crate::mock::{
     InMemoryGraph, InMemoryMigrator, InMemoryRepository, InMemoryVector, MockDatastore,
 };
+
+#[cfg(feature = "surreal")]
+pub use crate::surreal::SurrealRepository;
