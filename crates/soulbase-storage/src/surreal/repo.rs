@@ -82,7 +82,7 @@ impl<E: Entity> SurrealRepository<E> {
             }
             if let Some(Value::String(id_str)) = map.get_mut("id") {
                 if id_str.contains('⟨') || id_str.contains('⟩') {
-                    *id_str = id_str.replace('⟨', "").replace('⟩', "");
+                    *id_str = id_str.chars().filter(|c| *c != '⟨' && *c != '⟩').collect();
                 }
             }
         }

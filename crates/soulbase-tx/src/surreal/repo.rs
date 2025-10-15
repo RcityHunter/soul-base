@@ -181,10 +181,10 @@ impl OutboxStore for SurrealOutboxStore {
                 .query(
                     r#"UPDATE tx_outbox SET
                         status = "Delivered",
-                        lease_worker = null,
-                        lease_until = null,
+                        lease_worker = NONE,
+                        lease_until = NONE,
                         updated_at = $now,
-                        last_error = null
+                        last_error = NONE
                       WHERE tenant = $tenant AND msg_id = $msg_id
                       RETURN NONE"#,
                     json!({
@@ -212,8 +212,8 @@ impl OutboxStore for SurrealOutboxStore {
                     r#"UPDATE tx_outbox SET
                         status = "Pending",
                         visible_at = $visible,
-                        lease_worker = null,
-                        lease_until = null,
+                        lease_worker = NONE,
+                        lease_until = NONE,
                         last_error = $error,
                         updated_at = $now
                       WHERE tenant = $tenant AND msg_id = $msg_id
@@ -238,8 +238,8 @@ impl OutboxStore for SurrealOutboxStore {
                 .query(
                     r#"UPDATE tx_outbox SET
                         status = "Dead",
-                        lease_worker = null,
-                        lease_until = null,
+                        lease_worker = NONE,
+                        lease_until = NONE,
                         last_error = $error,
                         updated_at = $now
                       WHERE tenant = $tenant AND msg_id = $msg_id
@@ -265,9 +265,9 @@ impl OutboxStore for SurrealOutboxStore {
                     r#"UPDATE tx_outbox SET
                         status = "Pending",
                         visible_at = $visible,
-                        lease_worker = null,
-                        lease_until = null,
-                        last_error = null,
+                        lease_worker = NONE,
+                        lease_until = NONE,
+                        last_error = NONE,
                         updated_at = $now
                       WHERE tenant = $tenant AND msg_id = $msg_id
                       RETURN NONE"#,
