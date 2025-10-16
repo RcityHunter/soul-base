@@ -1,3 +1,7 @@
+pub mod store;
+#[cfg(feature = "consent-surreal")]
+pub mod surreal;
+
 use crate::errors::AuthError;
 use crate::model::AuthzRequest;
 use async_trait::async_trait;

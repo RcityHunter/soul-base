@@ -15,6 +15,9 @@ authn-oidc = ["dep:jsonwebtoken", "dep:reqwest"]
 pdp-local = []
 quota-memory = []
 cache-memory = []
+consent-surreal = ["dep:soulbase-storage", "soulbase-storage/surreal"]
+quota-surreal = ["dep:soulbase-storage", "soulbase-storage/surreal"]
+stores-surreal = ["consent-surreal", "quota-surreal"]
 
 [dependencies]
 async-trait = "0.1"
@@ -29,6 +32,7 @@ jsonwebtoken = { version = "9", optional = true, default-features = false }
 
 soulbase-types = { path = "../soulbase-types", version = "1.0.0" }
 soulbase-errors = { path = "../soulbase-errors", version = "1.0.0" }
+soulbase-storage = { path = "../soulbase-storage", version = "1.0.0", optional = true, default-features = false }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

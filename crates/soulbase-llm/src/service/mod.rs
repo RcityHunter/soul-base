@@ -923,9 +923,7 @@ async fn explain_view_handler(State(state): State<AppState>, req: Request<Body>)
     let html = match value.get("html").and_then(|v| v.as_str()) {
         Some(html) => html.to_string(),
         None => {
-            return intercept_error(InterceptError::internal(
-                "invalid explain view payload",
-            ));
+            return intercept_error(InterceptError::internal("invalid explain view payload"));
         }
     };
 

@@ -187,7 +187,7 @@ impl Authorizer for PolicyAuthorizer {
 mod tests {
     use super::*;
     use crate::model::ResourceUrn;
-    use soulbase_types::prelude::Id;
+    use soulbase_types::prelude::{Id, Subject, SubjectKind, TenantId};
 
     fn subject_with_claims(claims: Vec<(&str, &str)>) -> Subject {
         Subject {

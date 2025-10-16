@@ -10,9 +10,21 @@ pub mod observe;
 pub mod pdp;
 pub mod prelude;
 pub mod quota;
+pub mod util;
 
+use crate::consent::store::{ConsentVerifierWithStore, MemoryConsentStore};
+#[cfg(feature = "consent-surreal")]
+use crate::consent::surreal::SurrealConsentStore;
+use crate::quota::store::MemoryQuotaStore;
+#[cfg(feature = "stores-surreal")]
+use crate::quota::store::QuotaConfig;
+#[cfg(feature = "quota-surreal")]
+use crate::quota::surreal::SurrealQuotaStore;
+use crate::quota::QuotaStore;
 use prelude::*;
 use serde_json::Value;
+#[cfg(feature = "stores-surreal")]
+use soulbase_storage::surreal::SurrealDatastore;
 use soulbase_types::prelude::*;
 
 pub struct AuthFacade {
@@ -42,8 +54,8 @@ impl AuthFacade {
             authenticator: Box::new(OidcAuthenticatorStub),
             attr_provider: Box::new(DefaultAttributeProvider),
             authorizer: Box::new(PolicyAuthorizer::new(vec![rule])),
-            consent: Box::new(AlwaysOkConsent),
-            quota: Box::new(MemoryQuota),
+            consent: Box::new(ConsentVerifierWithStore::new(MemoryConsentStore::default())),
+            quota: Box::new(MemoryQuotaStore::with_default_limit(100)),
             cache: Box::new(MemoryDecisionCache::new(1_000)),
         }
     }
@@ -59,8 +71,8 @@ impl AuthFacade {
             authenticator: Box::new(authenticator),
             attr_provider: Box::new(attr_provider),
             authorizer: Box::new(PolicyAuthorizer::new(Vec::new())),
-            consent: Box::new(AlwaysOkConsent),
-            quota: Box::new(MemoryQuota),
+            consent: Box::new(ConsentVerifierWithStore::new(MemoryConsentStore::default())),
+            quota: Box::new(MemoryQuotaStore::with_default_limit(100)),
             cache: Box::new(MemoryDecisionCache::new(1_000)),
         })
     }
@@ -70,8 +82,8 @@ impl AuthFacade {
             authenticator: Box::new(OidcAuthenticatorStub),
             attr_provider: Box::new(DefaultAttributeProvider),
             authorizer: Box::new(PolicyAuthorizer::new(rules)),
-            consent: Box::new(AlwaysOkConsent),
-            quota: Box::new(MemoryQuota),
+            consent: Box::new(ConsentVerifierWithStore::new(MemoryConsentStore::default())),
+            quota: Box::new(MemoryQuotaStore::with_default_limit(100)),
             cache: Box::new(MemoryDecisionCache::new(1_000)),
         }
     }
@@ -90,10 +102,33 @@ impl AuthFacade {
             authenticator: Box::new(authenticator),
             attr_provider: Box::new(attr_provider),
             authorizer: Box::new(PolicyAuthorizer::new(rules)),
-            consent: Box::new(AlwaysOkConsent),
-            quota: Box::new(MemoryQuota),
+            consent: Box::new(ConsentVerifierWithStore::new(MemoryConsentStore::default())),
+            quota: Box::new(MemoryQuotaStore::with_default_limit(100)),
             cache: Box::new(MemoryDecisionCache::new(1_000)),
         })
+    }
+
+    pub fn with_consent_verifier(mut self, consent: Box<dyn ConsentVerifier>) -> Self {
+        self.consent = consent;
+        self
+    }
+
+    pub fn with_quota_store(mut self, quota: Box<dyn QuotaStore>) -> Self {
+        self.quota = quota;
+        self
+    }
+
+    #[cfg(feature = "stores-surreal")]
+    pub fn with_surreal_stores(
+        mut self,
+        datastore: &SurrealDatastore,
+        quota_config: QuotaConfig,
+    ) -> Self {
+        self.consent = Box::new(ConsentVerifierWithStore::new(SurrealConsentStore::new(
+            datastore,
+        )));
+        self.quota = Box::new(SurrealQuotaStore::new(datastore, quota_config));
+        self
     }
 
     pub async fn authorize(

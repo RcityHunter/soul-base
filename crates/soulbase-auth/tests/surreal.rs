@@ -1,12 +1,22 @@
-use soulbase_auth::consent::store::{ConsentVerifierWithStore, MemoryConsentStore};
+#![cfg(feature = "stores-surreal")]
+
 use soulbase_auth::prelude::*;
-use soulbase_auth::quota::store::MemoryQuotaStore;
+use soulbase_storage::surreal::{SurrealConfig, SurrealDatastore};
+use soulbase_storage::Datastore;
 use soulbase_types::prelude::*;
 
+async fn connect_datastore() -> SurrealDatastore {
+    SurrealDatastore::connect(SurrealConfig::default())
+        .await
+        .expect("connect surreal")
+}
+
 #[tokio::test]
-async fn consent_store_records_entries() {
-    let store = MemoryConsentStore::default();
+async fn surreal_consent_store_roundtrip() {
+    let datastore = connect_datastore().await;
+    let store = SurrealConsentStore::new(&datastore);
     let verifier = ConsentVerifierWithStore::new(store.clone());
+
     let request = AuthzRequest {
         subject: Subject {
             kind: SubjectKind::User,
@@ -37,11 +47,15 @@ async fn consent_store_records_entries() {
         .unwrap()
         .unwrap();
     assert_eq!(stored.purpose.as_deref(), Some("demo"));
+
+    datastore.shutdown().await.expect("shutdown");
 }
 
 #[tokio::test]
-async fn quota_store_limits_usage() {
-    let store = MemoryQuotaStore::with_default_limit(5);
+async fn surreal_quota_store_enforces_limit() {
+    let datastore = connect_datastore().await;
+    let store = SurrealQuotaStore::new(&datastore, QuotaConfig { default_limit: 5 });
+
     let key = QuotaKey {
         tenant: TenantId("tenant-q".into()),
         subject_id: Id("user-q".into()),
@@ -57,4 +71,6 @@ async fn quota_store_limits_usage() {
         store.check_and_consume(&key, 3).await.unwrap(),
         QuotaOutcome::BudgetExceeded
     ));
+
+    datastore.shutdown().await.expect("shutdown");
 }

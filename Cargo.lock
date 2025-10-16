@@ -5027,6 +5027,7 @@ dependencies = [
  "serde",
  "serde_json",
  "soulbase-errors",
+ "soulbase-storage",
  "soulbase-types",
  "thiserror 1.0.69",
  "tokio",
