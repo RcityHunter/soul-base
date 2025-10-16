@@ -17,6 +17,8 @@ pub mod observe;
 #[cfg(feature = "surreal")]
 pub mod repo;
 #[cfg(feature = "surreal")]
+pub mod schema;
+#[cfg(feature = "surreal")]
 pub mod session;
 #[cfg(feature = "surreal")]
 pub mod tx;
@@ -31,6 +33,11 @@ pub use mapper::SurrealMapper;
 pub use migrate::SurrealMigrator;
 #[cfg(feature = "surreal")]
 pub use repo::SurrealRepository;
+#[cfg(feature = "surreal")]
+pub use schema::{
+    core_migration, migrations as schema_migrations, TABLE_AWARENESS_EVENT, TABLE_CAUSAL_EDGE,
+    TABLE_RECALL_CHUNK, TABLE_TIMELINE_EVENT, TABLE_VECTOR_MANIFEST,
+};
 #[cfg(feature = "surreal")]
 pub use session::SurrealSession;
 #[cfg(feature = "surreal")]
