@@ -3,6 +3,7 @@ use crate::model::{AuthzRequest, Decision};
 use async_trait::async_trait;
 
 pub mod local;
+pub mod policy;
 
 #[async_trait]
 pub trait Authorizer: Send + Sync {

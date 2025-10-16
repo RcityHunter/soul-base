@@ -1,12 +1,22 @@
-use super::*;
+#[cfg(feature = "authn-oidc")]
+mod provider;
+
+#[cfg(feature = "authn-oidc")]
+pub use provider::{
+    ClaimsAttributeConfig, ClaimsAttributeProvider, JwkConfig, JwkSource, OidcAuthenticator,
+    OidcConfig,
+};
+
 use crate::errors;
-use soulbase_types::prelude::*;
+use crate::model::AuthnInput;
+use async_trait::async_trait;
+use soulbase_types::prelude::{Id, Subject, SubjectKind, TenantId};
 
 pub struct OidcAuthenticatorStub;
 
-#[async_trait::async_trait]
+#[async_trait]
 impl super::Authenticator for OidcAuthenticatorStub {
-    async fn authenticate(&self, input: AuthnInput) -> Result<Subject, AuthError> {
+    async fn authenticate(&self, input: AuthnInput) -> Result<Subject, crate::errors::AuthError> {
         match input {
             AuthnInput::BearerJwt(token) => {
                 let (sub, tenant) = token

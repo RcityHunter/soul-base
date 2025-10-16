@@ -559,7 +559,7 @@ impl IdempoStore for SurrealIdempoStore {
         map_result(
             session
                 .query(
-                    "UPDATE tx_idempo SET state = 'Succeeded', digest = $digest, error = null, hash = $hash, expires_at = null, updated_at = $now WHERE tenant = $tenant AND key = $key RETURN NONE",
+                    "UPDATE tx_idempo SET state = 'Succeeded', digest = $digest, error = NONE, hash = $hash, expires_at = NONE, updated_at = $now WHERE tenant = $tenant AND key = $key RETURN NONE",
                     json!({
                         "tenant": tenant.0,
                         "key": key,
@@ -608,7 +608,7 @@ impl IdempoStore for SurrealIdempoStore {
         map_result(
             session
                 .query(
-                    "UPDATE tx_idempo SET state = 'Failed', error = $error, hash = $hash, digest = null, expires_at = $expires, updated_at = $now WHERE tenant = $tenant AND key = $key RETURN NONE",
+                    "UPDATE tx_idempo SET state = 'Failed', error = $error, hash = $hash, digest = NONE, expires_at = $expires, updated_at = $now WHERE tenant = $tenant AND key = $key RETURN NONE",
                     json!({
                         "tenant": tenant.0,
                         "key": key,
@@ -628,7 +628,7 @@ impl IdempoStore for SurrealIdempoStore {
         map_result(
             session
                 .query(
-                    "DELETE tx_idempo WHERE expires_at != null AND expires_at <= $now",
+                    "DELETE tx_idempo WHERE expires_at != NONE AND expires_at <= $now",
                     json!({"now": now_ms}),
                 )
                 .await,

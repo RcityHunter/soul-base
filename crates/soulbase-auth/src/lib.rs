@@ -12,6 +12,7 @@ pub mod prelude;
 pub mod quota;
 
 use prelude::*;
+use serde_json::Value;
 use soulbase_types::prelude::*;
 
 pub struct AuthFacade {
@@ -25,14 +26,74 @@ pub struct AuthFacade {
 
 impl AuthFacade {
     pub fn minimal() -> Self {
+        let rule = PolicyRule {
+            id: "allow-attr".into(),
+            description: Some("allow when merged attrs contain allow=true".into()),
+            resources: vec!["*".into()],
+            actions: Vec::new(),
+            effect: PolicyEffect::Allow,
+            conditions: vec![Condition::AttrEquals {
+                path: "allow".into(),
+                equals: Value::Bool(true),
+            }],
+            obligations: Vec::new(),
+        };
         Self {
             authenticator: Box::new(OidcAuthenticatorStub),
             attr_provider: Box::new(DefaultAttributeProvider),
-            authorizer: Box::new(LocalAuthorizer),
+            authorizer: Box::new(PolicyAuthorizer::new(vec![rule])),
             consent: Box::new(AlwaysOkConsent),
             quota: Box::new(MemoryQuota),
             cache: Box::new(MemoryDecisionCache::new(1_000)),
         }
+    }
+
+    #[cfg(feature = "authn-oidc")]
+    pub fn with_oidc(config: OidcConfig) -> Result<Self, AuthError> {
+        let role_claim = config.role_claim.clone();
+        let authenticator = OidcAuthenticator::new(config)?;
+        let attr_provider = ClaimsAttributeProvider::new(ClaimsAttributeConfig {
+            roles_claim: role_claim,
+        });
+        Ok(Self {
+            authenticator: Box::new(authenticator),
+            attr_provider: Box::new(attr_provider),
+            authorizer: Box::new(PolicyAuthorizer::new(Vec::new())),
+            consent: Box::new(AlwaysOkConsent),
+            quota: Box::new(MemoryQuota),
+            cache: Box::new(MemoryDecisionCache::new(1_000)),
+        })
+    }
+
+    pub fn with_policy(rules: Vec<PolicyRule>) -> Self {
+        Self {
+            authenticator: Box::new(OidcAuthenticatorStub),
+            attr_provider: Box::new(DefaultAttributeProvider),
+            authorizer: Box::new(PolicyAuthorizer::new(rules)),
+            consent: Box::new(AlwaysOkConsent),
+            quota: Box::new(MemoryQuota),
+            cache: Box::new(MemoryDecisionCache::new(1_000)),
+        }
+    }
+
+    #[cfg(feature = "authn-oidc")]
+    pub fn with_oidc_and_policy(
+        config: OidcConfig,
+        rules: Vec<PolicyRule>,
+    ) -> Result<Self, AuthError> {
+        let role_claim = config.role_claim.clone();
+        let authenticator = OidcAuthenticator::new(config)?;
+        let attr_provider = ClaimsAttributeProvider::new(ClaimsAttributeConfig {
+            roles_claim: role_claim,
+        });
+        Ok(Self {
+            authenticator: Box::new(authenticator),
+            attr_provider: Box::new(attr_provider),
+            authorizer: Box::new(PolicyAuthorizer::new(rules)),
+            consent: Box::new(AlwaysOkConsent),
+            quota: Box::new(MemoryQuota),
+            cache: Box::new(MemoryDecisionCache::new(1_000)),
+        })
     }
 
     pub async fn authorize(

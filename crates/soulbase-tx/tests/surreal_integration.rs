@@ -8,6 +8,7 @@ use serde_json::json;
 use soulbase_storage::surreal::SurrealConfig;
 use soulbase_storage::Migrator;
 use soulbase_tx::prelude::*;
+use soulbase_tx::replay::ReplayService;
 use soulbase_tx::util::now_ms;
 use soulbase_types::prelude::{Id, TenantId};
 
@@ -223,6 +224,59 @@ async fn dead_letter_store_round_trip() {
         .await
         .expect("list after delete");
     assert!(refs.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn replay_service_restores_pending_message() {
+    let (stores, _datastore) = setup().await;
+    let outbox = stores.outbox();
+    let dead = stores.dead();
+    let tenant = TenantId("tenant-replay".into());
+    let msg_id = MsgId("msg-replay".into());
+    let now = now_ms();
+
+    let mut message = OutboxMessage::new(
+        tenant.clone(),
+        msg_id.clone(),
+        "events:replay".into(),
+        json!({ "foo": "bar" }),
+        now,
+    );
+    message.dispatch_key = Some("key-replay".into());
+    outbox.enqueue(message).await.expect("enqueue message");
+
+    outbox
+        .dead_letter(&tenant, &msg_id, "failure")
+        .await
+        .expect("mark dead");
+    let reference = DeadLetterRef {
+        tenant: tenant.clone(),
+        kind: DeadKind::Outbox,
+        id: msg_id.clone(),
+    };
+    dead.record(DeadLetter {
+        reference: reference.clone(),
+        last_error: Some("failure".into()),
+        stored_at: now,
+        note: None,
+    })
+    .await
+    .expect("record dead letter");
+
+    let replay = ReplayService::new(outbox.clone(), dead.clone());
+    replay
+        .replay(&reference)
+        .await
+        .expect("replay should succeed");
+
+    let status = outbox
+        .status(&tenant, &msg_id)
+        .await
+        .expect("status after replay")
+        .expect("message present");
+    assert!(matches!(status, OutboxStatus::Pending));
+    let dead_letter = dead.inspect(&reference).await.expect("inspect");
+    assert!(dead_letter.is_none());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
