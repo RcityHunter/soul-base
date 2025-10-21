@@ -73,3 +73,64 @@ where
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde::{Deserialize, Serialize};
+    use serde_json::json;
+
+    #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+    struct Doc {
+        id: String,
+        tenant: TenantId,
+    }
+
+    impl Entity for Doc {
+        const TABLE: &'static str = "doc";
+
+        fn id(&self) -> &str {
+            &self.id
+        }
+
+        fn tenant(&self) -> &TenantId {
+            &self.tenant
+        }
+    }
+
+    #[tokio::test]
+    async fn relate_and_detach_flow() {
+        let store = MockDatastore::new();
+        let graph: InMemoryGraph<Doc> = InMemoryGraph::new(&store);
+        let tenant = TenantId("tenant-graph".into());
+
+        for id in ["a", "b", "c"] {
+            store.store(
+                "doc",
+                &tenant,
+                id,
+                json!({"id": id, "tenant": tenant.0.clone()}),
+            );
+        }
+
+        graph
+            .relate(&tenant, "a", "edge", "b", json!({"rank": 1}))
+            .await
+            .unwrap();
+        graph
+            .relate(&tenant, "a", "edge", "c", json!({"rank": 2}))
+            .await
+            .unwrap();
+
+        let out = graph.out(&tenant, "a", "edge", 1).await.unwrap();
+        assert_eq!(out.len(), 1);
+
+        graph
+            .detach(&tenant, "a", "edge", "b")
+            .await
+            .unwrap();
+        let remaining = graph.out(&tenant, "a", "edge", 10).await.unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].id, "c");
+    }
+}

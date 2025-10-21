@@ -76,3 +76,93 @@ where
         Ok(results)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde::{Deserialize, Serialize};
+    use serde_json::json;
+
+    #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+    struct Doc {
+        id: String,
+        tenant: TenantId,
+    }
+
+    impl Entity for Doc {
+        const TABLE: &'static str = "doc";
+
+        fn id(&self) -> &str {
+            &self.id
+        }
+
+        fn tenant(&self) -> &TenantId {
+            &self.tenant
+        }
+    }
+
+    #[test]
+    fn distance_is_euclidean() {
+        let dist = super::distance(&[0.0, 0.0], &[3.0, 4.0]);
+        assert!((dist - 5.0).abs() < f32::EPSILON);
+    }
+
+    #[tokio::test]
+    async fn knn_orders_by_distance_and_skips_dimension_mismatch() {
+        let store = MockDatastore::new();
+        let vectors: InMemoryVector<Doc> = InMemoryVector::new(&store);
+        let tenant = TenantId("tenant-vector".into());
+
+        store.store(
+            "doc",
+            &tenant,
+            "a",
+            json!({"id": "a", "tenant": tenant.0.clone()}),
+        );
+        store.store(
+            "doc",
+            &tenant,
+            "b",
+            json!({"id": "b", "tenant": tenant.0.clone()}),
+        );
+
+        vectors
+            .upsert_vec(&tenant, "a", &[1.0, 0.0, 0.0])
+            .await
+            .unwrap();
+        vectors
+            .upsert_vec(&tenant, "b", &[0.0, 1.0, 0.0])
+            .await
+            .unwrap();
+        store.upsert_vector("doc", &tenant, "extra", vec![1.0, 2.0]);
+
+        let hits = vectors
+            .knn(&tenant, &[1.0, 0.1, 0.0], 2, None)
+            .await
+            .unwrap();
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].0.id, "a");
+        assert!(hits[0].1 < hits[1].1);
+    }
+
+    #[tokio::test]
+    async fn delete_removes_vectors() {
+        let store = MockDatastore::new();
+        let vectors: InMemoryVector<Doc> = InMemoryVector::new(&store);
+        let tenant = TenantId("tenant-vector".into());
+
+        store.store(
+            "doc",
+            &tenant,
+            "a",
+            json!({"id": "a", "tenant": tenant.0.clone()}),
+        );
+
+        vectors
+            .upsert_vec(&tenant, "a", &[1.0, 0.0])
+            .await
+            .unwrap();
+        vectors.delete_vec(&tenant, "a").await.unwrap();
+        assert!(store.get_vector("doc", &tenant, "a").is_none());
+    }
+}

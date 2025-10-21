@@ -38,3 +38,35 @@ impl Session for MockSession {
         Ok(MockTransaction::new(self.store.clone()))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::spi::tx::Transaction;
+    use soulbase_types::prelude::TenantId;
+
+    #[tokio::test]
+    async fn begin_returns_active_transaction() {
+        let store = MockDatastore::new();
+        let tenant = TenantId("tenant".into());
+        store.store("doc", &tenant, "id", serde_json::Value::Null);
+        let session = MockSession::new(store.clone());
+
+        let tx = session.begin().await.expect("start transaction");
+        assert!(tx.is_active());
+        assert_eq!(
+            tx.datastore().fetch("doc", &tenant, "id"),
+            Some(serde_json::Value::Null)
+        );
+    }
+
+    #[tokio::test]
+    async fn query_rejects_raw_statements() {
+        let session = MockSession::new(MockDatastore::new());
+        let err = session
+            .query("SELECT * FROM doc", serde_json::Value::Null)
+            .await
+            .expect_err("query should fail");
+        assert!(err.to_string().contains("mock session does not support raw queries"));
+    }
+}

@@ -68,3 +68,24 @@ impl Session for SurrealSession {
         Ok(SurrealTransaction::new(self.client.clone()))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::spi::datastore::Datastore;
+    use crate::surreal::{SurrealConfig, SurrealDatastore};
+
+    #[tokio::test]
+    async fn query_returns_array_of_rows() {
+        let datastore = SurrealDatastore::connect(SurrealConfig::default())
+            .await
+            .expect("connect mem surreal");
+        let session = datastore.session().await.expect("session");
+        let value = session
+            .query("RETURN [{ result: 1 }];", Value::Null)
+            .await
+            .expect("query");
+        assert!(value.is_array());
+        assert_eq!(value.as_array().unwrap().len(), 1);
+    }
+}
