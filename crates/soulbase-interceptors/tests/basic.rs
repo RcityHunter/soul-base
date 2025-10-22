@@ -2,6 +2,7 @@ use futures::FutureExt;
 use soulbase_auth::{prelude::*, AuthFacade};
 use soulbase_interceptors::prelude::*;
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
 
 struct MockReq {
@@ -75,7 +76,7 @@ async fn pipeline_allows_when_attrs_allow_true() {
         }),
         Box::new(TenantGuardStage),
         Box::new(AuthzQuotaStage {
-            facade: AuthFacade::minimal(),
+            facade: Arc::new(AuthFacade::minimal()),
         }),
         Box::new(ResilienceStage::new(
             Duration::from_secs(5),
@@ -140,7 +141,7 @@ async fn pipeline_denies_when_not_allowed() {
         }),
         Box::new(TenantGuardStage),
         Box::new(AuthzQuotaStage {
-            facade: AuthFacade::minimal(),
+            facade: Arc::new(AuthFacade::minimal()),
         }),
         Box::new(ResilienceStage::new(
             Duration::from_secs(5),

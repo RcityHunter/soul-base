@@ -75,6 +75,26 @@ async fn surreal_core_migration_applies() {
         .await
         .expect("insert vector manifest");
 
+    session
+        .query(
+            "CREATE llm_tool_plan:test_plan SET \
+             tenant = $tenant, plan_id = 'plan-1', step_count = 0, steps = [], \
+             created_at = 1, updated_at = 1 RETURN NONE",
+            json!({ "tenant": tenant }),
+        )
+        .await
+        .expect("insert llm tool plan");
+
+    session
+        .query(
+            "CREATE llm_explain:test_explain SET \
+             tenant = $tenant, explain_id = 'exp-1', provider = 'openai', metadata = {}, \
+             created_at = 1 RETURN NONE",
+            json!({ "tenant": tenant }),
+        )
+        .await
+        .expect("insert llm explain");
+
     let timeline = session
         .query(
             "SELECT event_id FROM timeline_event WHERE tenant = $tenant",

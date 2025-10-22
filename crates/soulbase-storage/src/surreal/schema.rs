@@ -8,8 +8,11 @@ pub const TABLE_CAUSAL_EDGE: &str = "causal_edge";
 pub const TABLE_RECALL_CHUNK: &str = "recall_chunk";
 pub const TABLE_AWARENESS_EVENT: &str = "awareness_event";
 pub const TABLE_VECTOR_MANIFEST: &str = "vector_manifest";
+pub const TABLE_LLM_TOOL_PLAN: &str = "llm_tool_plan";
+pub const TABLE_LLM_EXPLAIN: &str = "llm_explain";
 
 const MIGRATION_VERSION_CORE: &str = "0001_timeline_causal_recall_awareness";
+const MIGRATION_VERSION_LLM: &str = "0002_llm_plan_explain";
 
 const MIGRATION_CORE_UP: &str = r#"
 DEFINE TABLE timeline_event SCHEMAFULL;
@@ -96,6 +99,34 @@ REMOVE TABLE causal_edge;
 REMOVE TABLE timeline_event;
 "#;
 
+const MIGRATION_LLM_UP: &str = r#"
+DEFINE TABLE llm_tool_plan SCHEMAFULL;
+DEFINE FIELD tenant ON llm_tool_plan TYPE string ASSERT string::len($value) > 0;
+DEFINE FIELD plan_id ON llm_tool_plan TYPE string ASSERT string::len($value) > 0;
+DEFINE FIELD step_count ON llm_tool_plan TYPE int ASSERT $value >= 0;
+DEFINE FIELD steps ON llm_tool_plan TYPE array<object>;
+DEFINE FIELD created_at ON llm_tool_plan TYPE int;
+DEFINE FIELD updated_at ON llm_tool_plan TYPE int;
+DEFINE INDEX uniq_llm_plan ON TABLE llm_tool_plan FIELDS tenant, plan_id UNIQUE;
+DEFINE INDEX idx_llm_plan_tenant ON TABLE llm_tool_plan FIELDS tenant;
+
+DEFINE TABLE llm_explain SCHEMAFULL;
+DEFINE FIELD tenant ON llm_explain TYPE string ASSERT string::len($value) > 0;
+DEFINE FIELD explain_id ON llm_explain TYPE string ASSERT string::len($value) > 0;
+DEFINE FIELD provider ON llm_explain TYPE string ASSERT string::len($value) > 0;
+DEFINE FIELD fingerprint ON llm_explain TYPE option<string>;
+DEFINE FIELD plan_id ON llm_explain TYPE option<string>;
+DEFINE FIELD metadata ON llm_explain TYPE object;
+DEFINE FIELD created_at ON llm_explain TYPE int;
+DEFINE INDEX uniq_llm_explain ON TABLE llm_explain FIELDS tenant, explain_id UNIQUE;
+DEFINE INDEX idx_llm_explain_plan ON TABLE llm_explain FIELDS tenant, plan_id;
+"#;
+
+const MIGRATION_LLM_DOWN: &str = r#"
+REMOVE TABLE llm_explain;
+REMOVE TABLE llm_tool_plan;
+"#;
+
 pub fn core_migration() -> MigrationScript {
     MigrationScript {
         version: MIGRATION_VERSION_CORE.to_string(),
@@ -105,8 +136,17 @@ pub fn core_migration() -> MigrationScript {
     }
 }
 
+pub fn llm_migration() -> MigrationScript {
+    MigrationScript {
+        version: MIGRATION_VERSION_LLM.to_string(),
+        up_sql: MIGRATION_LLM_UP.trim().to_string(),
+        down_sql: MIGRATION_LLM_DOWN.trim().to_string(),
+        checksum: checksum(MIGRATION_LLM_UP, MIGRATION_LLM_DOWN),
+    }
+}
+
 pub fn migrations() -> Vec<MigrationScript> {
-    vec![core_migration()]
+    vec![core_migration(), llm_migration()]
 }
 
 fn checksum(up: &str, down: &str) -> String {
@@ -127,5 +167,14 @@ mod tests {
         assert!(migration.checksum.starts_with("sha256:"));
         assert!(migration.up_sql.contains("DEFINE TABLE timeline_event"));
         assert!(migration.down_sql.contains("REMOVE TABLE timeline_event"));
+    }
+
+    #[test]
+    fn llm_checksum_stable() {
+        let migration = llm_migration();
+        assert!(migration.checksum.starts_with("sha256:"));
+        assert!(migration.up_sql.contains("DEFINE TABLE llm_tool_plan"));
+        assert!(migration.up_sql.contains("DEFINE TABLE llm_explain"));
+        assert!(migration.down_sql.contains("REMOVE TABLE llm_tool_plan"));
     }
 }

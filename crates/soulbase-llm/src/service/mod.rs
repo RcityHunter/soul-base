@@ -1,7 +1,11 @@
+use anyhow::{anyhow, Context};
+use async_trait::async_trait;
 use std::{
     collections::HashMap,
     convert::Infallible,
+    fs,
     net::SocketAddr,
+    path::Path,
     sync::{Arc, Mutex},
     time::Instant,
 };
@@ -36,20 +40,29 @@ use soulbase_errors::prelude::PublicErrorView;
 use soulbase_sandbox::prelude::{PolicyConfig, Sandbox};
 use soulbase_tools::errors::ToolError;
 use soulbase_tools::prelude::{
-    InMemoryRegistry as ToolRegistryMemory, InvokeRequest, InvokeStatus, Invoker, InvokerImpl,
-    ToolCall as ToolInvocation, ToolId, ToolOrigin,
+    InvokeRequest, InvokeStatus, Invoker, InvokerImpl, SurrealToolRegistry,
+    ToolCall as ToolInvocation, ToolId, ToolOrigin, ToolRegistry,
 };
 use soulbase_types::prelude::TenantId;
 use tokio::sync::RwLock;
 use tracing::{error, info, warn};
 
-use soulbase_auth::authn::oidc::OidcAuthenticatorStub;
-use soulbase_auth::AuthFacade;
+use soulbase_auth::authn::oidc::{JwkConfig, OidcAuthenticator, OidcAuthenticatorStub, OidcConfig};
+use soulbase_auth::model::Action;
+use soulbase_auth::pdp::policy::{PolicyEffect, PolicyRule, PolicySet};
+use soulbase_auth::quota::store::QuotaConfig;
+use soulbase_auth::{prelude::Authenticator, AuthFacade};
 use soulbase_interceptors::adapters::http::{handle_with_chain, AxumReq, AxumRes};
 use soulbase_interceptors::context::InterceptContext;
 use soulbase_interceptors::errors::InterceptError;
 use soulbase_interceptors::prelude::*;
 use soulbase_observe::prelude::{Meter, MeterRegistry, MetricKind, MetricSpec};
+use soulbase_storage::surreal::{
+    schema_migrations, SurrealConfig, SurrealDatastore, SurrealSession, TABLE_LLM_EXPLAIN,
+    TABLE_LLM_TOOL_PLAN,
+};
+use soulbase_storage::Migrator;
+use soulbase_storage::{Datastore, QueryExecutor};
 
 use crate::prelude::*;
 #[cfg(feature = "provider-claude")]
@@ -66,54 +79,109 @@ pub struct AppState {
     policy: StructOutPolicy,
     chain: Arc<InterceptorChain>,
     meter: MeterRegistry,
-    plan_store: ToolPlanStore,
+    plan_store: Arc<dyn PlanStore>,
     #[allow(dead_code)]
-    tool_registry: Arc<ToolRegistryMemory>,
+    tool_registry: Arc<dyn ToolRegistry>,
     tool_invoker: Arc<dyn Invoker>,
-    explain_store: ExplainStore,
+    explain_store: Arc<dyn ExplainStore>,
 }
 
+#[async_trait]
+trait PlanStore: Send + Sync {
+    async fn record(
+        &self,
+        tenant: &TenantId,
+        key: &str,
+        plan: &[ToolCallProposal],
+    ) -> Result<(), LlmError>;
+    async fn get(
+        &self,
+        tenant: &TenantId,
+        key: &str,
+    ) -> Result<Option<Vec<ToolCallProposal>>, LlmError>;
+    async fn list(&self, tenant: &TenantId) -> Result<Vec<PlanSummary>, LlmError>;
+    async fn remove(&self, tenant: &TenantId, key: &str) -> Result<bool, LlmError>;
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone, Default)]
-struct ToolPlanStore {
+struct MemoryPlanStore {
     inner: Arc<Mutex<HashMap<(String, String), Vec<ToolCallProposal>>>>,
 }
 
-impl ToolPlanStore {
-    fn record(&self, tenant: &TenantId, key: &str, plan: Vec<ToolCallProposal>) {
+#[async_trait]
+impl PlanStore for MemoryPlanStore {
+    async fn record(
+        &self,
+        tenant: &TenantId,
+        key: &str,
+        plan: &[ToolCallProposal],
+    ) -> Result<(), LlmError> {
+        let mut guard = self
+            .inner
+            .lock()
+            .map_err(|_| LlmError::unknown("plan store poisoned"))?;
+        guard.insert((tenant.0.clone(), key.to_string()), plan.to_vec());
+        Ok(())
+    }
+
+    async fn get(
+        &self,
+        tenant: &TenantId,
+        key: &str,
+    ) -> Result<Option<Vec<ToolCallProposal>>, LlmError> {
+        let guard = self
+            .inner
+            .lock()
+            .map_err(|_| LlmError::unknown("plan store poisoned"))?;
+        Ok(guard.get(&(tenant.0.clone(), key.to_string())).cloned())
+    }
+
+    async fn list(&self, tenant: &TenantId) -> Result<Vec<PlanSummary>, LlmError> {
+        let guard = self
+            .inner
+            .lock()
+            .map_err(|_| LlmError::unknown("plan store poisoned"))?;
+        Ok(guard
+            .iter()
+            .filter_map(|((tenant_id, plan_id), steps)| {
+                if tenant_id == &tenant.0 {
+                    Some(PlanSummary {
+                        plan_id: plan_id.clone(),
+                        step_count: steps.len() as u32,
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect())
+    }
+
+    async fn remove(&self, tenant: &TenantId, key: &str) -> Result<bool, LlmError> {
+        let mut guard = self
+            .inner
+            .lock()
+            .map_err(|_| LlmError::unknown("plan store poisoned"))?;
+        Ok(guard.remove(&(tenant.0.clone(), key.to_string())).is_some())
+    }
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+impl MemoryPlanStore {
+    fn record_sync(&self, tenant: &TenantId, key: &str, plan: Vec<ToolCallProposal>) {
         if let Ok(mut guard) = self.inner.lock() {
             guard.insert((tenant.0.clone(), key.to_string()), plan);
         }
     }
 
-    fn get(&self, tenant: &TenantId, key: &str) -> Option<Vec<ToolCallProposal>> {
+    fn get_sync(&self, tenant: &TenantId, key: &str) -> Option<Vec<ToolCallProposal>> {
         self.inner
             .lock()
             .ok()
             .and_then(|guard| guard.get(&(tenant.0.clone(), key.to_string())).cloned())
     }
 
-    fn list(&self, tenant: &TenantId) -> Vec<PlanSummary> {
-        self.inner
-            .lock()
-            .map(|guard| {
-                guard
-                    .iter()
-                    .filter_map(|((tenant_id, plan_id), steps)| {
-                        if tenant_id == &tenant.0 {
-                            Some(PlanSummary {
-                                plan_id: plan_id.clone(),
-                                step_count: steps.len() as u32,
-                            })
-                        } else {
-                            None
-                        }
-                    })
-                    .collect()
-            })
-            .unwrap_or_default()
-    }
-
-    fn remove(&self, tenant: &TenantId, key: &str) -> bool {
+    fn remove_sync(&self, tenant: &TenantId, key: &str) -> bool {
         self.inner
             .lock()
             .map(|mut guard| guard.remove(&(tenant.0.clone(), key.to_string())).is_some())
@@ -121,31 +189,183 @@ impl ToolPlanStore {
     }
 }
 
-#[derive(Clone, Default)]
-struct ExplainStore {
-    inner: Arc<Mutex<HashMap<String, ExplainRecord>>>,
+struct SurrealPlanStore {
+    datastore: Arc<SurrealDatastore>,
 }
 
-#[derive(Clone, Debug, Serialize)]
-struct ExplainRecord {
-    explain_id: String,
-    provider: String,
-    fingerprint: Option<String>,
-    tenant: TenantId,
-    plan_id: Option<String>,
-    created_at: DateTime<Utc>,
-    metadata: serde_json::Value,
+impl SurrealPlanStore {
+    fn new(datastore: Arc<SurrealDatastore>) -> Self {
+        Self { datastore }
+    }
+
+    fn record_id(tenant: &TenantId, plan: &str) -> String {
+        format!("{}:{}", tenant.0, plan)
+    }
+
+    async fn session(&self) -> Result<SurrealSession, LlmError> {
+        self.datastore
+            .session()
+            .await
+            .map_err(|err| LlmError::unknown(&format!("open surreal session: {err}")))
+    }
 }
 
-impl ExplainStore {
-    fn record(
+#[async_trait]
+impl PlanStore for SurrealPlanStore {
+    async fn record(
+        &self,
+        tenant: &TenantId,
+        key: &str,
+        plan: &[ToolCallProposal],
+    ) -> Result<(), LlmError> {
+        let session = self.session().await?;
+        let now_ms = Utc::now().timestamp_millis();
+        session
+            .query(
+                "UPSERT type::thing($table, $id) CONTENT {
+                    tenant: $tenant,
+                    plan_id: $plan,
+                    step_count: $step_count,
+                    steps: $steps,
+                    created_at: $now,
+                    updated_at: $now
+                } RETURN NONE",
+                json!({
+                    "table": TABLE_LLM_TOOL_PLAN,
+                    "id": Self::record_id(tenant, key),
+                    "tenant": tenant.0,
+                    "plan": key,
+                    "step_count": plan.len() as u32,
+                    "steps": plan,
+                    "now": now_ms,
+                }),
+            )
+            .await
+            .map_err(|err| LlmError::unknown(&format!("store tool plan: {err}")))?;
+        Ok(())
+    }
+
+    async fn get(
+        &self,
+        tenant: &TenantId,
+        key: &str,
+    ) -> Result<Option<Vec<ToolCallProposal>>, LlmError> {
+        let session = self.session().await?;
+        let value = session
+            .query(
+                "SELECT steps FROM llm_tool_plan WHERE tenant = $tenant AND plan_id = $plan LIMIT 1",
+                json!({
+                    "tenant": tenant.0,
+                    "plan": key,
+                }),
+            )
+            .await
+            .map_err(|err| LlmError::unknown(&format!("load tool plan: {err}")))?;
+        match value {
+            serde_json::Value::Array(mut rows) => {
+                if let Some(serde_json::Value::Object(row)) = rows.pop() {
+                    if let Some(steps) = row.get("steps") {
+                        let plan: Vec<ToolCallProposal> = serde_json::from_value(steps.clone())
+                            .map_err(|err| {
+                                LlmError::unknown(&format!("decode tool plan steps: {err}"))
+                            })?;
+                        return Ok(Some(plan));
+                    }
+                }
+                Ok(None)
+            }
+            other => Err(LlmError::unknown(&format!(
+                "unexpected plan fetch response: {other}"
+            ))),
+        }
+    }
+
+    async fn list(&self, tenant: &TenantId) -> Result<Vec<PlanSummary>, LlmError> {
+        let session = self.session().await?;
+        let value = session
+            .query(
+                "SELECT plan_id, step_count FROM llm_tool_plan WHERE tenant = $tenant ORDER BY updated_at DESC",
+                json!({
+                    "tenant": tenant.0,
+                }),
+            )
+            .await
+            .map_err(|err| LlmError::unknown(&format!("list tool plans: {err}")))?;
+        match value {
+            serde_json::Value::Array(rows) => {
+                let mut out = Vec::with_capacity(rows.len());
+                for row in rows {
+                    if let serde_json::Value::Object(map) = row {
+                        if let (Some(plan_id), Some(step_count)) =
+                            (map.get("plan_id"), map.get("step_count"))
+                        {
+                            let plan_id = plan_id.as_str().unwrap_or_default().to_string();
+                            let step_count = step_count.as_u64().unwrap_or_default() as u32;
+                            out.push(PlanSummary {
+                                plan_id,
+                                step_count,
+                            });
+                        }
+                    }
+                }
+                Ok(out)
+            }
+            other => Err(LlmError::unknown(&format!(
+                "unexpected plan list response: {other}"
+            ))),
+        }
+    }
+
+    async fn remove(&self, tenant: &TenantId, key: &str) -> Result<bool, LlmError> {
+        let session = self.session().await?;
+        let value = session
+            .query(
+                "DELETE type::thing($table, $id) RETURN BEFORE",
+                json!({
+                    "table": TABLE_LLM_TOOL_PLAN,
+                    "id": Self::record_id(tenant, key),
+                }),
+            )
+            .await
+            .map_err(|err| LlmError::unknown(&format!("delete tool plan: {err}")))?;
+        match value {
+            serde_json::Value::Array(rows) => Ok(!rows.is_empty()),
+            other => Err(LlmError::unknown(&format!(
+                "unexpected plan delete response: {other}"
+            ))),
+        }
+    }
+}
+
+#[async_trait]
+trait ExplainStore: Send + Sync {
+    async fn record(
         &self,
         tenant: &TenantId,
         plan_id: Option<&str>,
         provider: &str,
         fingerprint: Option<String>,
         metadata: serde_json::Value,
-    ) -> String {
+    ) -> Result<String, LlmError>;
+    async fn get(&self, explain_id: &str) -> Result<Option<ExplainRecord>, LlmError>;
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Clone, Default)]
+struct MemoryExplainStore {
+    inner: Arc<Mutex<HashMap<String, ExplainRecord>>>,
+}
+
+#[async_trait]
+impl ExplainStore for MemoryExplainStore {
+    async fn record(
+        &self,
+        tenant: &TenantId,
+        plan_id: Option<&str>,
+        provider: &str,
+        fingerprint: Option<String>,
+        metadata: serde_json::Value,
+    ) -> Result<String, LlmError> {
         let explain_id = format!(
             "exp_{}",
             Utc::now().timestamp_nanos_opt().unwrap_or_default()
@@ -159,18 +379,333 @@ impl ExplainStore {
             created_at: Utc::now(),
             metadata,
         };
-        if let Ok(mut guard) = self.inner.lock() {
-            guard.insert(explain_id.clone(), record);
-        }
-        explain_id
+        let mut guard = self
+            .inner
+            .lock()
+            .map_err(|_| LlmError::unknown("explain store poisoned"))?;
+        guard.insert(explain_id.clone(), record);
+        Ok(explain_id)
     }
 
-    fn get(&self, explain_id: &str) -> Option<ExplainRecord> {
-        self.inner
+    async fn get(&self, explain_id: &str) -> Result<Option<ExplainRecord>, LlmError> {
+        let guard = self
+            .inner
             .lock()
-            .ok()
-            .and_then(|guard| guard.get(explain_id).cloned())
+            .map_err(|_| LlmError::unknown("explain store poisoned"))?;
+        Ok(guard.get(explain_id).cloned())
     }
+}
+
+struct SurrealExplainStore {
+    datastore: Arc<SurrealDatastore>,
+}
+
+impl SurrealExplainStore {
+    fn new(datastore: Arc<SurrealDatastore>) -> Self {
+        Self { datastore }
+    }
+
+    fn record_id(tenant: &TenantId, explain: &str) -> String {
+        format!("{}:{}", tenant.0, explain)
+    }
+
+    async fn session(&self) -> Result<SurrealSession, LlmError> {
+        self.datastore
+            .session()
+            .await
+            .map_err(|err| LlmError::unknown(&format!("open surreal session: {err}")))
+    }
+}
+
+#[async_trait]
+impl ExplainStore for SurrealExplainStore {
+    async fn record(
+        &self,
+        tenant: &TenantId,
+        plan_id: Option<&str>,
+        provider: &str,
+        fingerprint: Option<String>,
+        metadata: serde_json::Value,
+    ) -> Result<String, LlmError> {
+        let session = self.session().await?;
+        let now = Utc::now();
+        let explain_id = format!("exp_{}", now.timestamp_nanos_opt().unwrap_or_default());
+        session
+            .query(
+                "UPSERT type::thing($table, $id) CONTENT {
+                    tenant: $tenant,
+                    explain_id: $explain,
+                    provider: $provider,
+                    fingerprint: $fingerprint,
+                    plan_id: $plan_id,
+                    metadata: $metadata,
+                    created_at: $created_at
+                } RETURN NONE",
+                json!({
+                    "table": TABLE_LLM_EXPLAIN,
+                    "id": Self::record_id(tenant, &explain_id),
+                    "tenant": tenant.0,
+                    "explain": explain_id,
+                    "provider": provider,
+                    "fingerprint": fingerprint,
+                    "plan_id": plan_id,
+                    "metadata": metadata,
+                    "created_at": now.to_rfc3339(),
+                }),
+            )
+            .await
+            .map_err(|err| LlmError::unknown(&format!("store explain record: {err}")))?;
+        Ok(explain_id)
+    }
+
+    async fn get(&self, explain_id: &str) -> Result<Option<ExplainRecord>, LlmError> {
+        let session = self.session().await?;
+        let value = session
+            .query(
+                "SELECT explain_id, provider, fingerprint, plan_id, metadata, created_at, tenant \
+                 FROM llm_explain WHERE explain_id = $explain LIMIT 1",
+                json!({ "explain": explain_id }),
+            )
+            .await
+            .map_err(|err| LlmError::unknown(&format!("load explain record: {err}")))?;
+        match value {
+            serde_json::Value::Array(mut rows) => {
+                if let Some(serde_json::Value::Object(map)) = rows.pop() {
+                    let explain_id = map
+                        .get("explain_id")
+                        .and_then(|v| v.as_str())
+                        .ok_or_else(|| LlmError::unknown("explain record missing id"))?
+                        .to_string();
+                    let provider = map
+                        .get("provider")
+                        .and_then(|v| v.as_str())
+                        .ok_or_else(|| LlmError::unknown("explain record missing provider"))?
+                        .to_string();
+                    let fingerprint = map
+                        .get("fingerprint")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+                    let plan_id = map
+                        .get("plan_id")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+                    let metadata = map
+                        .get("metadata")
+                        .cloned()
+                        .unwrap_or_else(|| serde_json::Value::Object(Default::default()));
+                    let tenant = map
+                        .get("tenant")
+                        .and_then(|v| v.as_str())
+                        .ok_or_else(|| LlmError::unknown("explain record missing tenant"))?;
+                    let created_at_str = map
+                        .get("created_at")
+                        .and_then(|v| v.as_str())
+                        .ok_or_else(|| LlmError::unknown("explain record missing timestamp"))?;
+                    let created_at = chrono::DateTime::parse_from_rfc3339(created_at_str)
+                        .map_err(|err| {
+                            LlmError::unknown(&format!("parse explain timestamp: {err}"))
+                        })?
+                        .with_timezone(&Utc);
+
+                    Ok(Some(ExplainRecord {
+                        explain_id,
+                        provider,
+                        fingerprint,
+                        tenant: TenantId(tenant.to_string()),
+                        plan_id,
+                        created_at,
+                        metadata,
+                    }))
+                } else {
+                    Ok(None)
+                }
+            }
+            other => Err(LlmError::unknown(&format!(
+                "unexpected explain fetch response: {other}"
+            ))),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct ExplainRecord {
+    explain_id: String,
+    provider: String,
+    fingerprint: Option<String>,
+    tenant: TenantId,
+    plan_id: Option<String>,
+    created_at: DateTime<Utc>,
+    metadata: serde_json::Value,
+}
+
+struct AuthWiring {
+    authenticator: Box<dyn Authenticator>,
+    facade: Arc<AuthFacade>,
+}
+
+async fn init_surreal_datastore() -> anyhow::Result<Arc<SurrealDatastore>> {
+    let endpoint = std::env::var("SURREAL_ENDPOINT").unwrap_or_else(|_| "mem://".into());
+    let namespace = std::env::var("SURREAL_NAMESPACE").unwrap_or_else(|_| "soul".into());
+    let database = std::env::var("SURREAL_DATABASE").unwrap_or_else(|_| "default".into());
+
+    let mut config = SurrealConfig::new(endpoint, namespace, database);
+    let username = std::env::var("SURREAL_USERNAME").ok();
+    let password = std::env::var("SURREAL_PASSWORD").ok();
+    if let (Some(user), Some(pass)) = (username, password) {
+        config = config.with_credentials(user, pass);
+    }
+
+    let datastore = SurrealDatastore::connect(config)
+        .await
+        .context("connect surreal datastore")?;
+
+    if let Err(err) = datastore
+        .migrator()
+        .apply_up(&schema_migrations())
+        .await
+        .context("apply core surreal migrations")
+    {
+        warn!(
+            target = "soulbase::llm",
+            "failed to apply surreal schema migrations: {err:?}"
+        );
+    }
+
+    Ok(Arc::new(datastore))
+}
+
+fn load_oidc_config_from_env() -> anyhow::Result<Option<OidcConfig>> {
+    let issuer = match std::env::var("LLM_OIDC_ISSUER") {
+        Ok(v) if !v.is_empty() => v,
+        _ => return Ok(None),
+    };
+
+    let mut builder = OidcConfig::builder(issuer);
+
+    if let Ok(audiences) = std::env::var("LLM_OIDC_AUDIENCES") {
+        for aud in audiences
+            .split(',')
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+        {
+            builder = builder.audience(aud.to_string());
+        }
+    }
+
+    if let Ok(claim) = std::env::var("LLM_OIDC_TENANT_CLAIM") {
+        if !claim.is_empty() {
+            builder = builder.tenant_claim(claim);
+        }
+    }
+
+    if let Ok(claim) = std::env::var("LLM_OIDC_SUBJECT_CLAIM") {
+        if !claim.is_empty() {
+            builder = builder.subject_claim(claim);
+        }
+    }
+
+    if let Ok(claim) = std::env::var("LLM_OIDC_ROLE_CLAIM") {
+        if !claim.is_empty() {
+            builder = builder.role_claim(claim);
+        }
+    }
+
+    if let Ok(jwks_uri) = std::env::var("LLM_OIDC_JWKS_URL") {
+        if !jwks_uri.is_empty() {
+            builder = builder.jwks_uri(jwks_uri);
+        }
+    } else if let Ok(keys_json) = std::env::var("LLM_OIDC_JWKS_STATIC") {
+        let keys: Vec<JwkConfig> =
+            serde_json::from_str(&keys_json).context("decode LLM_OIDC_JWKS_STATIC as JWK set")?;
+        builder = builder.static_keys(keys);
+    } else {
+        return Err(anyhow!(
+            "missing LLM_OIDC_JWKS_URL or LLM_OIDC_JWKS_STATIC for OIDC configuration"
+        ));
+    }
+
+    Ok(Some(builder.build()))
+}
+
+fn read_policy_from_path(path: &Path) -> anyhow::Result<Vec<PolicyRule>> {
+    let bytes = fs::read(path).with_context(|| format!("read policy file {}", path.display()))?;
+    let set: PolicySet =
+        serde_json::from_slice(&bytes).context("decode policy file into PolicySet")?;
+    Ok(set.rules)
+}
+
+fn load_policy_rules_from_env() -> anyhow::Result<Option<Vec<PolicyRule>>> {
+    if let Ok(path) = std::env::var("LLM_POLICY_PATH") {
+        let rules = read_policy_from_path(Path::new(&path))?;
+        return Ok(Some(rules));
+    }
+
+    if let Ok(json) = std::env::var("LLM_POLICY_JSON") {
+        let set: PolicySet =
+            serde_json::from_str(&json).context("decode LLM_POLICY_JSON into PolicySet")?;
+        return Ok(Some(set.rules));
+    }
+
+    Ok(None)
+}
+
+fn build_default_allow_policy() -> Vec<PolicyRule> {
+    vec![PolicyRule {
+        id: "allow-all-service".into(),
+        description: Some("Temporary allow-all policy for LLM routes".into()),
+        resources: vec![
+            "urn:llm:chat".into(),
+            "urn:llm:embed".into(),
+            "urn:llm:rerank".into(),
+            "urn:llm:plan".into(),
+            "urn:llm:explain".into(),
+        ],
+        actions: vec![Action::Invoke, Action::Read, Action::List, Action::Write],
+        effect: PolicyEffect::Allow,
+        conditions: Vec::new(),
+        obligations: Vec::new(),
+    }]
+}
+
+fn build_auth_wiring(datastore: Option<&Arc<SurrealDatastore>>) -> anyhow::Result<AuthWiring> {
+    let oidc_cfg = match load_oidc_config_from_env()? {
+        Some(cfg) => cfg,
+        None => {
+            warn!(
+                target = "soulbase::llm",
+                "LLM_OIDC_ISSUER not set; using stub authenticator"
+            );
+            return Ok(AuthWiring {
+                authenticator: Box::new(OidcAuthenticatorStub),
+                facade: Arc::new(AuthFacade::minimal()),
+            });
+        }
+    };
+
+    let rules = load_policy_rules_from_env()?.unwrap_or_else(|| {
+        warn!(
+            target = "soulbase::llm",
+            "LLM_POLICY_PATH/LLM_POLICY_JSON not provided; applying permissive default policy"
+        );
+        build_default_allow_policy()
+    });
+
+    let facade = AuthFacade::with_oidc_and_policy(oidc_cfg.clone(), rules)
+        .context("initialise AuthFacade with OIDC policy")?;
+
+    let facade = if let Some(store) = datastore {
+        facade.with_surreal_stores(store, QuotaConfig::default())
+    } else {
+        facade
+    };
+
+    let authenticator =
+        OidcAuthenticator::new(oidc_cfg).context("build OIDC authenticator for interceptors")?;
+
+    Ok(AuthWiring {
+        authenticator: Box::new(authenticator),
+        facade: Arc::new(facade),
+    })
 }
 
 #[derive(Deserialize)]
@@ -384,16 +919,16 @@ fn extract_plan_key(metadata: &serde_json::Value) -> Option<String> {
     }
 }
 
-fn record_tool_plan(
-    store: &ToolPlanStore,
+async fn record_tool_plan(
+    store: &Arc<dyn PlanStore>,
     tenant: &TenantId,
     plan_key: Option<&str>,
     plan: &[ToolCallProposal],
-) {
+) -> Result<(), LlmError> {
     if let Some(key) = plan_key {
-        let cloned = plan.to_vec();
-        store.record(tenant, key, cloned);
+        store.record(tenant, key, plan).await?;
     }
+    Ok(())
 }
 
 fn record_chat_usage(
@@ -506,22 +1041,30 @@ fn map_tool_error(err: ToolError) -> InterceptError {
     InterceptError::from_error(err.into_inner())
 }
 
-fn build_tooling() -> (Arc<ToolRegistryMemory>, Arc<dyn Invoker>) {
-    let tool_registry = Arc::new(ToolRegistryMemory::new());
-    let tool_registry_for_invoker: Arc<dyn soulbase_tools::prelude::ToolRegistry> =
-        tool_registry.clone();
-    let tool_auth = Arc::new(AuthFacade::minimal());
+fn map_llm_error(err: LlmError) -> InterceptError {
+    InterceptError::from_error(err.into_inner())
+}
+
+fn build_tooling(
+    datastore: Arc<SurrealDatastore>,
+    facade: Arc<AuthFacade>,
+) -> (Arc<dyn ToolRegistry>, Arc<dyn Invoker>) {
+    let tool_registry: Arc<dyn ToolRegistry> =
+        Arc::new(SurrealToolRegistry::new(datastore.clone()));
     let sandbox = Sandbox::minimal();
     let policy = PolicyConfig::default();
-    let invoker_impl = InvokerImpl::new(tool_registry_for_invoker, tool_auth, sandbox, policy);
+    let invoker_impl = InvokerImpl::new(tool_registry.clone(), facade, sandbox, policy);
     let tool_invoker: Arc<dyn Invoker> = Arc::new(invoker_impl);
     (tool_registry, tool_invoker)
 }
 
 fn create_app_state(
-    plan_store: ToolPlanStore,
-    tool_registry: Arc<ToolRegistryMemory>,
+    plan_store: Arc<dyn PlanStore>,
+    tool_registry: Arc<dyn ToolRegistry>,
     tool_invoker: Arc<dyn Invoker>,
+    explain_store: Arc<dyn ExplainStore>,
+    chain: InterceptorChain,
+    meter: MeterRegistry,
 ) -> AppState {
     let mut registry = Registry::new();
     install_providers(&mut registry);
@@ -529,12 +1072,12 @@ fn create_app_state(
     AppState {
         registry: Arc::new(RwLock::new(registry)),
         policy: StructOutPolicy::StrictReject,
-        chain: Arc::new(build_chain()),
-        meter: MeterRegistry::default(),
+        chain: Arc::new(chain),
+        meter,
         plan_store,
         tool_registry,
         tool_invoker,
-        explain_store: ExplainStore::default(),
+        explain_store,
     }
 }
 
@@ -543,7 +1086,7 @@ pub async fn run() -> anyhow::Result<()> {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
-    let state = default_state();
+    let state = default_state().await?;
     let app = build_router(state);
 
     let listen = std::env::var("LLM_LISTEN").unwrap_or_else(|_| "127.0.0.1:9000".into());
@@ -568,10 +1111,31 @@ pub fn build_router(state: AppState) -> Router {
         .with_state(state)
 }
 
-pub fn default_state() -> AppState {
-    let plan_store = ToolPlanStore::default();
-    let (tool_registry, tool_invoker) = build_tooling();
-    create_app_state(plan_store, tool_registry, tool_invoker)
+pub async fn default_state() -> anyhow::Result<AppState> {
+    let datastore = init_surreal_datastore().await?;
+    let auth = build_auth_wiring(Some(&datastore))?;
+    let plan_store: Arc<dyn PlanStore> = Arc::new(SurrealPlanStore::new(datastore.clone()));
+    let explain_store: Arc<dyn ExplainStore> =
+        Arc::new(SurrealExplainStore::new(datastore.clone()));
+    let meter = MeterRegistry::default();
+    let AuthWiring {
+        authenticator,
+        facade,
+    } = auth;
+    let facade_for_tools = facade.clone();
+    let (tool_registry, tool_invoker) = build_tooling(datastore, facade_for_tools);
+    let chain = build_chain(AuthWiring {
+        authenticator,
+        facade: facade.clone(),
+    });
+    Ok(create_app_state(
+        plan_store,
+        tool_registry,
+        tool_invoker,
+        explain_store,
+        chain,
+        meter,
+    ))
 }
 
 async fn chat_handler(State(state): State<AppState>, req: Request<Body>) -> Response {
@@ -615,7 +1179,9 @@ async fn chat_handler(State(state): State<AppState>, req: Request<Body>) -> Resp
                     &tenant,
                     plan_key.as_deref(),
                     &response.message.tool_calls,
-                );
+                )
+                .await
+                .map_err(map_llm_error)?;
 
                 let provider = response
                     .provider_meta
@@ -628,13 +1194,16 @@ async fn chat_handler(State(state): State<AppState>, req: Request<Body>) -> Resp
                     .get("system_fingerprint")
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
-                let explain_id = explain_store.record(
-                    &tenant,
-                    plan_key.as_deref(),
-                    &provider,
-                    fingerprint.clone(),
-                    response.provider_meta.clone(),
-                );
+                let explain_id = explain_store
+                    .record(
+                        &tenant,
+                        plan_key.as_deref(),
+                        &provider,
+                        fingerprint.clone(),
+                        response.provider_meta.clone(),
+                    )
+                    .await
+                    .map_err(map_llm_error)?;
 
                 if let Some(obj) = response.provider_meta.as_object_mut() {
                     obj.insert("explain_id".into(), serde_json::Value::String(explain_id));
@@ -749,9 +1318,13 @@ async fn plan_handler(State(state): State<AppState>, req: Request<Body>) -> Resp
                 .filter(|segment| !segment.is_empty())
                 .ok_or_else(|| InterceptError::schema("plan id missing"))?;
 
-            let plan = store.get(&tenant, plan_id).ok_or_else(|| {
-                InterceptError::from_public(codes::STORAGE_NOT_FOUND, "Plan not found")
-            })?;
+            let plan = store
+                .get(&tenant, plan_id)
+                .await
+                .map_err(map_llm_error)?
+                .ok_or_else(|| {
+                    InterceptError::from_public(codes::STORAGE_NOT_FOUND, "Plan not found")
+                })?;
 
             Ok(json!({
                 "plan_id": plan_id,
@@ -775,7 +1348,7 @@ async fn plan_list_handler(State(state): State<AppState>, req: Request<Body>) ->
 
         Box::pin(async move {
             let tenant = tenant?;
-            let plans = store.list(&tenant);
+            let plans = store.list(&tenant).await.map_err(map_llm_error)?;
             Ok(json!({
                 "plans": plans,
             }))
@@ -803,7 +1376,10 @@ async fn plan_delete_handler(State(state): State<AppState>, req: Request<Body>) 
                 .filter(|segment| !segment.is_empty())
                 .ok_or_else(|| InterceptError::schema("plan id missing"))?;
 
-            let removed = store.remove(&tenant, plan_id);
+            let removed = store
+                .remove(&tenant, plan_id)
+                .await
+                .map_err(map_llm_error)?;
             if !removed {
                 return Err(InterceptError::from_public(
                     codes::STORAGE_NOT_FOUND,
@@ -839,9 +1415,16 @@ async fn explain_handler(State(state): State<AppState>, req: Request<Body>) -> R
                 .filter(|segment| !segment.is_empty())
                 .ok_or_else(|| InterceptError::schema("explain id missing"))?;
 
-            let record = store.get(explain_id).ok_or_else(|| {
-                InterceptError::from_public(codes::STORAGE_NOT_FOUND, "Explain record not found")
-            })?;
+            let record = store
+                .get(explain_id)
+                .await
+                .map_err(map_llm_error)?
+                .ok_or_else(|| {
+                    InterceptError::from_public(
+                        codes::STORAGE_NOT_FOUND,
+                        "Explain record not found",
+                    )
+                })?;
 
             if record.tenant != tenant {
                 return Err(InterceptError::deny_policy(
@@ -881,9 +1464,16 @@ async fn explain_view_handler(State(state): State<AppState>, req: Request<Body>)
                 .filter(|segment| !segment.is_empty())
                 .ok_or_else(|| InterceptError::schema("explain id missing"))?;
 
-            let record = store.get(explain_id).ok_or_else(|| {
-                InterceptError::from_public(codes::STORAGE_NOT_FOUND, "Explain record not found")
-            })?;
+            let record = store
+                .get(explain_id)
+                .await
+                .map_err(map_llm_error)?
+                .ok_or_else(|| {
+                    InterceptError::from_public(
+                        codes::STORAGE_NOT_FOUND,
+                        "Explain record not found",
+                    )
+                })?;
 
             if record.tenant != tenant {
                 return Err(InterceptError::deny_policy(
@@ -1035,9 +1625,13 @@ async fn plan_execute_handler(State(state): State<AppState>, req: Request<Body>)
                 .filter(|segment| !segment.is_empty())
                 .ok_or_else(|| InterceptError::schema("plan id missing"))?;
 
-            let plan = store.get(&tenant, plan_id).ok_or_else(|| {
-                InterceptError::from_public(codes::STORAGE_NOT_FOUND, "Plan not found")
-            })?;
+            let plan = store
+                .get(&tenant, plan_id)
+                .await
+                .map_err(map_llm_error)?
+                .ok_or_else(|| {
+                    InterceptError::from_public(codes::STORAGE_NOT_FOUND, "Plan not found")
+                })?;
 
             let mut results: Vec<serde_json::Value> = Vec::new();
             let mut overall_degradation: Vec<String> = Vec::new();
@@ -1117,7 +1711,10 @@ async fn plan_execute_handler(State(state): State<AppState>, req: Request<Body>)
             }
 
             // Remove plan after successful execution to avoid replays.
-            store.remove(&tenant, plan_id);
+            store
+                .remove(&tenant, plan_id)
+                .await
+                .map_err(map_llm_error)?;
 
             let mut response = json!({
                 "plan_id": plan_id,
@@ -1133,8 +1730,10 @@ async fn plan_execute_handler(State(state): State<AppState>, req: Request<Body>)
                 }
             }
 
-            let explain_id =
-                explain_store.record(&tenant, Some(plan_id), "tool-plan", None, response.clone());
+            let explain_id = explain_store
+                .record(&tenant, Some(plan_id), "tool-plan", None, response.clone())
+                .await
+                .map_err(map_llm_error)?;
 
             if let Some(obj) = response.as_object_mut() {
                 obj.insert("explain_id".into(), json!(explain_id));
@@ -1243,9 +1842,23 @@ async fn chat_stream_handler(State(state): State<AppState>, mut req: Request<Bod
         }
 
         if let (Some(key), Some(ref tenant_id)) = (plan_key_stream.as_deref(), tenant_stream.as_ref()) {
-            if let Ok(collected) = plan_acc_stream_inner.lock() {
+            let collected = plan_acc_stream_inner
+                .lock()
+                .map(|guard| guard.clone())
+                .unwrap_or_default();
+            if !collected.is_empty() {
                 let tenant = TenantId(tenant_id.to_string());
-                plan_store_stream.record(&tenant, key, collected.clone());
+                if let Err(err) = plan_store_stream
+                    .record(&tenant, key, &collected)
+                    .await
+                {
+                    let inner = err.into_inner();
+                    warn!(
+                        target = "soulbase::llm",
+                        "failed to persist streamed plan: {:?}",
+                        inner
+                    );
+                }
             }
         }
 
@@ -1263,17 +1876,31 @@ async fn chat_stream_handler(State(state): State<AppState>, mut req: Request<Bod
 
         if let Some(ref tenant_id) = tenant_stream {
             let tenant = TenantId(tenant_id.clone());
-            let explain_id = explain_store_stream.record(
-                &tenant,
-                plan_key_stream.as_deref(),
-                &provider_name,
-                None,
-                json!({
-                    "provider": provider_name,
-                }),
-            );
-            let explain_event = json!({ "explain_id": explain_id });
-            yield Ok::<Event, Infallible>(Event::default().event("explain").data(explain_event.to_string()));
+            match explain_store_stream
+                .record(
+                    &tenant,
+                    plan_key_stream.as_deref(),
+                    &provider_name,
+                    None,
+                    json!({
+                        "provider": provider_name,
+                    }),
+                )
+                .await
+            {
+                Ok(explain_id) => {
+                    let explain_event = json!({ "explain_id": explain_id });
+                    yield Ok::<Event, Infallible>(Event::default().event("explain").data(explain_event.to_string()));
+                }
+                Err(err) => {
+                    let inner = err.into_inner();
+                    warn!(
+                        target = "soulbase::llm",
+                        "failed to record explain event: {:?}",
+                        inner
+                    );
+                }
+            }
         }
     };
 
@@ -1564,7 +2191,7 @@ fn log_provider_error(provider: &str, context: &str, view: PublicErrorView) {
     error!(code = %view.code, "{provider} {context}: {}", view.message);
 }
 
-fn build_chain() -> InterceptorChain {
+fn build_chain(auth: AuthWiring) -> InterceptorChain {
     let policy = RoutePolicy::new(vec![
         RoutePolicySpec {
             when: MatchCond::Http {
@@ -1657,7 +2284,7 @@ fn build_chain() -> InterceptorChain {
             },
             bind: RouteBindingSpec {
                 resource: "urn:llm:plan".into(),
-                action: "Delete".into(),
+                action: "Write".into(),
                 attrs_template: Some(json!({ "allow": true })),
                 attrs_from_body: false,
             },
@@ -1676,15 +2303,14 @@ fn build_chain() -> InterceptorChain {
         },
     ]);
 
+    let authenticator = auth.authenticator;
+    let facade = auth.facade;
+
     InterceptorChain::new(vec![
         Box::new(ContextInitStage),
         Box::new(RoutePolicyStage { policy }),
-        Box::new(AuthnMapStage {
-            authenticator: Box::new(OidcAuthenticatorStub),
-        }),
-        Box::new(AuthzQuotaStage {
-            facade: AuthFacade::minimal(),
-        }),
+        Box::new(AuthnMapStage { authenticator }),
+        Box::new(AuthzQuotaStage { facade }),
         Box::new(ResponseStampStage),
     ])
 }
@@ -1698,19 +2324,48 @@ mod tests {
         CapabilityDecl, ConcurrencyKind, ConsentPolicy, IdempoKind, Limits, SafetyClass, SchemaDoc,
         SideEffect, ToolId, ToolManifest,
     };
-    use soulbase_tools::prelude::ToolRegistry;
+    use soulbase_tools::prelude::{InMemoryRegistry as ToolRegistryMemory, ToolRegistry};
     use soulbase_types::prelude::{Id, TenantId};
+    use std::sync::Arc;
     use tower::ServiceExt;
 
     const BODY_LIMIT: usize = 1_048_576;
 
-    fn build_test_router() -> (Router, ToolPlanStore, Arc<ToolRegistryMemory>) {
+    use std::sync::Arc;
+
+    fn build_test_router() -> (Router, Arc<MemoryPlanStore>, Arc<ToolRegistryMemory>) {
         std::env::remove_var("OPENAI_API_KEY");
         std::env::remove_var("OPENAI_MODEL_ALIAS");
 
-        let plan_store = ToolPlanStore::default();
-        let (tool_registry, tool_invoker) = build_tooling();
-        let state = create_app_state(plan_store.clone(), tool_registry.clone(), tool_invoker);
+        let plan_store = Arc::new(MemoryPlanStore::default());
+        let explain_store = Arc::new(MemoryExplainStore::default());
+        let tool_registry = Arc::new(ToolRegistryMemory::new());
+        let tool_registry_dyn: Arc<dyn ToolRegistry> = tool_registry.clone();
+        let tool_auth = Arc::new(AuthFacade::minimal());
+        let sandbox = Sandbox::minimal();
+        let policy = PolicyConfig::default();
+        let invoker_impl = InvokerImpl::new(
+            tool_registry_dyn.clone(),
+            tool_auth.clone(),
+            sandbox,
+            policy,
+        );
+        let tool_invoker: Arc<dyn Invoker> = Arc::new(invoker_impl);
+        let chain = build_chain(AuthWiring {
+            authenticator: Box::new(OidcAuthenticatorStub),
+            facade: tool_auth.clone(),
+        });
+        let meter = MeterRegistry::default();
+        let plan_store_dyn: Arc<dyn PlanStore> = plan_store.clone();
+        let explain_store_dyn: Arc<dyn ExplainStore> = explain_store.clone();
+        let state = create_app_state(
+            plan_store_dyn,
+            tool_registry_dyn,
+            tool_invoker,
+            explain_store_dyn,
+            chain,
+            meter,
+        );
 
         (build_router(state), plan_store, tool_registry)
     }
@@ -1894,7 +2549,7 @@ mod tests {
 
         let response = app.oneshot(request).await.expect("router call");
         assert_eq!(response.status(), StatusCode::OK);
-        let stored = plan_store.get(&TenantId("tenant-a".into()), "case-chat-1");
+        let stored = plan_store.get_sync(&TenantId("tenant-a".into()), "case-chat-1");
         assert!(stored.is_some());
     }
 
@@ -1929,7 +2584,7 @@ mod tests {
         let chat_response = app.clone().oneshot(chat_request).await.expect("chat call");
         assert_eq!(chat_response.status(), StatusCode::OK);
 
-        let stored = plan_store.get(&TenantId("tenant-a".into()), "case-chat-2");
+        let stored = plan_store.get_sync(&TenantId("tenant-a".into()), "case-chat-2");
         assert!(stored.is_some());
 
         let get_request = Request::builder()
@@ -2023,7 +2678,7 @@ mod tests {
         let (app, plan_store, tool_registry) = build_test_router();
 
         let tenant = TenantId("tenant-c".into());
-        plan_store.record(
+        plan_store.record_sync(
             &tenant,
             "case-exec-1",
             vec![ToolCallProposal {
@@ -2060,7 +2715,7 @@ mod tests {
         assert!(results[0]["output"]["simulated"].as_bool().unwrap_or(false));
 
         // Plan should be removed after execution
-        assert!(plan_store.get(&tenant, "case-exec-1").is_none());
+        assert!(plan_store.get_sync(&tenant, "case-exec-1").is_none());
     }
 
     #[tokio::test]

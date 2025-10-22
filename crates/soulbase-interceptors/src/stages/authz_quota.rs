@@ -4,9 +4,10 @@ use crate::stages::{Stage, StageOutcome};
 use async_trait::async_trait;
 use soulbase_auth::AuthFacade;
 use soulbase_errors::prelude::*;
+use std::sync::Arc;
 
 pub struct AuthzQuotaStage {
-    pub facade: AuthFacade,
+    pub facade: Arc<AuthFacade>,
 }
 
 #[async_trait]

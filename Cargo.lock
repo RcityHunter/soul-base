@@ -5188,6 +5188,7 @@ dependencies = [
  "soulbase-interceptors",
  "soulbase-observe",
  "soulbase-sandbox",
+ "soulbase-storage",
  "soulbase-tools",
  "soulbase-types",
  "thiserror 1.0.69",
