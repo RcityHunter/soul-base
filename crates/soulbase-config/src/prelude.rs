@@ -1,6 +1,6 @@
 pub use crate::{
     errors::ConfigError,
-    loader::Loader,
+    loader::{Loader, LoaderBuilder},
     model::{Checksum, KeyPath, NamespaceId, ReloadClass, SnapshotVersion},
     schema::{FieldMeta, InMemorySchemaRegistry, SchemaRegistry},
     secrets::{

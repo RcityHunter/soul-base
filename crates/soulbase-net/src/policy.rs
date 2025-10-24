@@ -16,6 +16,7 @@ pub struct NetPolicy {
     pub security: SecurityPolicy,
     pub limits: LimitsPolicy,
     pub cache_hook: CacheHookPolicy,
+    pub error_map: ErrorMapPolicy,
 }
 
 impl Default for NetPolicy {
@@ -31,6 +32,7 @@ impl Default for NetPolicy {
             security: SecurityPolicy::default(),
             limits: LimitsPolicy::default(),
             cache_hook: CacheHookPolicy::default(),
+            error_map: ErrorMapPolicy::default(),
         }
     }
 }
@@ -212,6 +214,23 @@ impl Default for LimitsPolicy {
 #[derive(Clone, Debug, Default)]
 pub struct CacheHookPolicy {
     pub enabled: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct ErrorMapPolicy {
+    pub unauthorized: Vec<u16>,
+    pub forbidden: Vec<u16>,
+    pub rate_limited: Vec<u16>,
+}
+
+impl Default for ErrorMapPolicy {
+    fn default() -> Self {
+        Self {
+            unauthorized: vec![StatusCode::UNAUTHORIZED.as_u16()],
+            forbidden: vec![StatusCode::FORBIDDEN.as_u16()],
+            rate_limited: vec![StatusCode::TOO_MANY_REQUESTS.as_u16()],
+        }
+    }
 }
 
 #[derive(Clone, Debug)]

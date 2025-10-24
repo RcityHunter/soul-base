@@ -6,6 +6,12 @@ use serde_json::Value;
 use url::Url;
 
 use crate::policy::RetryDecision;
+#[cfg(feature = "auth")]
+use soulbase_auth::model::{Action, AuthnInput, ResourceUrn};
+#[cfg(feature = "observe")]
+use soulbase_observe::prelude::ObserveCtx;
+#[cfg(feature = "auth")]
+use soulbase_types::prelude::Consent;
 
 #[derive(Clone, Debug, Default)]
 pub struct TimeoutCfg {
@@ -48,6 +54,10 @@ pub struct NetRequest {
     pub idempotent: bool,
     pub trace_id: Option<String>,
     pub retry_decision: Option<RetryDecision>,
+    #[cfg(feature = "auth")]
+    pub auth: Option<NetAuthContext>,
+    #[cfg(feature = "observe")]
+    pub observe_ctx: Option<ObserveCtx>,
 }
 
 impl Default for NetRequest {
@@ -61,7 +71,29 @@ impl Default for NetRequest {
             idempotent: true,
             trace_id: None,
             retry_decision: None,
+            #[cfg(feature = "auth")]
+            auth: None,
+            #[cfg(feature = "observe")]
+            observe_ctx: None,
         }
+    }
+}
+
+impl NetRequest {
+    pub fn set_trace_id<T: Into<String>>(&mut self, id: T) {
+        self.trace_id = Some(id.into());
+    }
+
+    #[cfg(feature = "auth")]
+    pub fn with_auth(mut self, ctx: NetAuthContext) -> Self {
+        self.auth = Some(ctx);
+        self
+    }
+
+    #[cfg(feature = "observe")]
+    pub fn with_observe_ctx(mut self, ctx: ObserveCtx) -> Self {
+        self.observe_ctx = Some(ctx);
+        self
     }
 }
 
@@ -81,5 +113,45 @@ impl NetResponse {
             body,
             elapsed,
         }
+    }
+}
+
+#[cfg(feature = "auth")]
+#[derive(Clone, Debug)]
+pub struct NetAuthContext {
+    pub input: AuthnInput,
+    pub resource: ResourceUrn,
+    pub action: Action,
+    pub attrs: Value,
+    pub consent: Option<Consent>,
+    pub correlation_id: Option<String>,
+}
+
+#[cfg(feature = "auth")]
+impl NetAuthContext {
+    pub fn new(input: AuthnInput, resource: ResourceUrn, action: Action) -> Self {
+        Self {
+            input,
+            resource,
+            action,
+            attrs: Value::Object(Default::default()),
+            consent: None,
+            correlation_id: None,
+        }
+    }
+
+    pub fn with_attrs(mut self, attrs: Value) -> Self {
+        self.attrs = attrs;
+        self
+    }
+
+    pub fn with_consent(mut self, consent: Consent) -> Self {
+        self.consent = Some(consent);
+        self
+    }
+
+    pub fn with_correlation_id<T: Into<String>>(mut self, id: T) -> Self {
+        self.correlation_id = Some(id.into());
+        self
     }
 }

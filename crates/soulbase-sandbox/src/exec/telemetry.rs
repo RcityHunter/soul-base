@@ -6,8 +6,7 @@ use crate::model::{ExecOp, ExecResult, Profile};
 use serde_json::json;
 #[cfg(feature = "observe")]
 use soulbase_observe::prelude::{
-    LogBuilder, LogLevel, Logger, Meter, MeterRegistry, MetricKind, MetricSpec, NoopRedactor,
-    ObserveCtx,
+    LogBuilder, LogLevel, Logger, Meter, MetricKind, MetricSpec, NoopRedactor, ObserveCtx,
 };
 #[cfg(feature = "observe")]
 use std::sync::Arc;
@@ -51,13 +50,13 @@ const SANDBOX_EXEC_LATENCY_MS: MetricSpec = MetricSpec {
 #[cfg(feature = "observe")]
 #[derive(Clone)]
 pub(crate) struct SandboxTelemetry {
-    meter: MeterRegistry,
+    meter: Arc<dyn Meter>,
     logger: Arc<dyn Logger>,
 }
 
 #[cfg(feature = "observe")]
 impl SandboxTelemetry {
-    pub fn new(meter: MeterRegistry, logger: Arc<dyn Logger>) -> Self {
+    pub fn new(meter: Arc<dyn Meter>, logger: Arc<dyn Logger>) -> Self {
         Self { meter, logger }
     }
 

@@ -42,10 +42,26 @@ impl NetError {
         )
     }
 
+    pub fn unauthorized(msg: &str) -> Self {
+        Self::from_builder(
+            ErrorBuilder::new(codes::AUTH_UNAUTHENTICATED)
+                .user_msg("Authentication required.")
+                .dev_msg(msg),
+        )
+    }
+
     pub fn unknown(msg: &str) -> Self {
         Self::from_builder(
             ErrorBuilder::new(codes::UNKNOWN_INTERNAL)
                 .user_msg("Internal error.")
+                .dev_msg(msg),
+        )
+    }
+
+    pub fn rate_limited(msg: &str) -> Self {
+        Self::from_builder(
+            ErrorBuilder::new(codes::QUOTA_RATELIMIT)
+                .user_msg("Too many requests.")
                 .dev_msg(msg),
         )
     }

@@ -1,3 +1,4 @@
+use futures::FutureExt;
 use parking_lot::Mutex;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -7,7 +8,9 @@ use soulbase_config::prelude::*;
 use soulbase_config::secrets::{
     CachingResolver, EnvSecretResolver, FileSecretResolver, KvSecretResolver, SecretResolver,
 };
-use soulbase_config::source::{cli::CliArgsSource, env::EnvSource, file::FileSource};
+use soulbase_config::source::{
+    cli::CliArgsSource, env::EnvSource, file::FileSource, remote::RemoteSource,
+};
 use std::collections::HashMap;
 use std::env;
 use std::fs;
@@ -41,6 +44,148 @@ fn load_minimal_snapshot_and_read() {
     let app_name: String = snapshot.get(&KeyPath("app.name".into())).expect("app.name");
     assert_eq!(app_name, "Soulseed");
     assert!(!snapshot.checksum().0.is_empty());
+}
+
+#[test]
+fn loader_builder_combines_sources_in_order() {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_micros();
+    let path = env::temp_dir().join(format!("soulbase_cfg_{timestamp}.json"));
+    fs::write(&path, r#"{"app":{"name":"from_file","from_file":true}}"#)
+        .expect("write config file");
+
+    env::set_var("SB_APP_NAME", "from_env");
+
+    let remote_state = Arc::new(Mutex::new(serde_json::Map::new()));
+    {
+        let mut guard = remote_state.lock();
+        access::set_path(
+            &mut *guard,
+            "app.name",
+            serde_json::Value::String("from_remote".into()),
+        );
+        access::set_path(
+            &mut *guard,
+            "app.version",
+            serde_json::Value::String("1".into()),
+        );
+    }
+    let remote_clone = remote_state.clone();
+    let remote = RemoteSource::new("remote", move || {
+        let state = remote_clone.clone();
+        async move { Ok(state.lock().clone()) }.boxed()
+    });
+
+    let loader = Loader::builder()
+        .add_file_sources([path.clone()])
+        .add_env_source("SB", "_")
+        .add_source(remote)
+        .build();
+
+    let runtime = tokio::runtime::Runtime::new().expect("runtime");
+    let snapshot = runtime
+        .block_on(async { loader.load_once().await })
+        .expect("snapshot");
+
+    let name: String = snapshot.get(&KeyPath("app.name".into())).expect("app.name");
+    assert_eq!(name, "from_remote");
+
+    let from_file: bool = snapshot
+        .get(&KeyPath("app.from_file".into()))
+        .expect("from_file");
+    assert!(from_file);
+
+    let version: String = snapshot
+        .get(&KeyPath("app.version".into()))
+        .expect("version");
+    assert_eq!(version, "1");
+
+    env::remove_var("SB_APP_NAME");
+    let _ = fs::remove_file(&path);
+}
+
+#[test]
+fn loader_builder_honors_cli_overrides_after_env_and_remote() {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_micros();
+    let path = env::temp_dir().join(format!("soulbase_cfg_precedence_{timestamp}.json"));
+    fs::write(
+        &path,
+        r#"{"app":{"name":"from_file","file_only":true,"priority":"file"}}"#,
+    )
+    .expect("write config file");
+
+    env::set_var("SB_APP_PRIORITY", "env");
+    env::set_var("SB_APP_ENV_ONLY", "env-only");
+
+    let remote_state = Arc::new(Mutex::new(serde_json::Map::new()));
+    {
+        let mut guard = remote_state.lock();
+        access::set_path(
+            &mut *guard,
+            "app.priority",
+            serde_json::Value::String("remote".into()),
+        );
+        access::set_path(
+            &mut *guard,
+            "app.remote_only",
+            serde_json::Value::Bool(true),
+        );
+    }
+    let remote_clone = remote_state.clone();
+    let remote = RemoteSource::new("remote-precedence", move || {
+        let state = remote_clone.clone();
+        async move { Ok(state.lock().clone()) }.boxed()
+    });
+
+    let cli_args = CliArgsSource {
+        args: vec!["--app.priority=cli".into(), "--app.cli_only=true".into()],
+    };
+
+    let loader = Loader::builder()
+        .add_file_sources([path.clone()])
+        .add_env_source("SB", "_")
+        .add_source(remote)
+        .add_source(cli_args)
+        .build();
+
+    let runtime = tokio::runtime::Runtime::new().expect("runtime");
+    let snapshot = runtime
+        .block_on(async { loader.load_once().await })
+        .expect("snapshot");
+
+    let priority: String = snapshot
+        .get(&KeyPath("app.priority".into()))
+        .expect("priority key");
+    assert_eq!(priority, "cli");
+
+    let file_only: bool = snapshot
+        .get(&KeyPath("app.file_only".into()))
+        .expect("file flag");
+    assert!(file_only);
+
+    let remote_only: bool = snapshot
+        .get(&KeyPath("app.remote_only".into()))
+        .expect("remote flag");
+    assert!(remote_only);
+
+    let env_only: String = snapshot
+        .get(&KeyPath("app.env_only".into()))
+        .expect("env flag");
+    assert_eq!(env_only, "env-only");
+
+    let cli_only: bool = snapshot
+        .get(&KeyPath("app.cli_only".into()))
+        .expect("cli flag");
+    assert!(cli_only);
+
+    env::remove_var("SB_APP_PRIORITY");
+    env::remove_var("SB_APP_ENV_ONLY");
+    let _ = fs::remove_file(&path);
 }
 
 struct StaticSource;

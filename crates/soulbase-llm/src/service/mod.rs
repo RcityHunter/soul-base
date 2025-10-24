@@ -56,7 +56,10 @@ use soulbase_interceptors::adapters::http::{handle_with_chain, AxumReq, AxumRes}
 use soulbase_interceptors::context::InterceptContext;
 use soulbase_interceptors::errors::InterceptError;
 use soulbase_interceptors::prelude::*;
-use soulbase_observe::prelude::{Meter, MeterRegistry, MetricKind, MetricSpec};
+use soulbase_observe::prelude::{
+    LogBuilder, LogLevel, Logger, Meter, MetricKind, MetricSpec, NoopRedactor, ObserveCtx,
+    ObserveError, PrometheusEvidence, PrometheusHub,
+};
 use soulbase_storage::surreal::{
     schema_migrations, SurrealConfig, SurrealDatastore, SurrealSession, TABLE_LLM_EXPLAIN,
     TABLE_LLM_TOOL_PLAN,
@@ -78,12 +81,14 @@ pub struct AppState {
     registry: Arc<RwLock<Registry>>,
     policy: StructOutPolicy,
     chain: Arc<InterceptorChain>,
-    meter: MeterRegistry,
+    meter: Arc<dyn Meter>,
+    logger: Arc<dyn Logger>,
     plan_store: Arc<dyn PlanStore>,
     #[allow(dead_code)]
     tool_registry: Arc<dyn ToolRegistry>,
     tool_invoker: Arc<dyn Invoker>,
     explain_store: Arc<dyn ExplainStore>,
+    observe: Arc<ObserveSystem>,
 }
 
 #[async_trait]
@@ -527,6 +532,41 @@ impl ExplainStore for SurrealExplainStore {
     }
 }
 
+#[derive(Clone)]
+struct ObserveSystem {
+    hub: Arc<PrometheusHub>,
+    meter: Arc<dyn Meter>,
+    logger: Arc<dyn Logger>,
+    _evidence: PrometheusEvidence,
+}
+
+impl ObserveSystem {
+    fn new() -> Self {
+        let hub = Arc::new(PrometheusHub::new());
+        let meter = hub.meter();
+        let logger = hub.logger();
+        let evidence = hub.evidence();
+        Self {
+            hub,
+            meter: Arc::new(meter),
+            logger: Arc::new(logger),
+            _evidence: evidence,
+        }
+    }
+
+    fn meter(&self) -> Arc<dyn Meter> {
+        self.meter.clone()
+    }
+
+    fn logger(&self) -> Arc<dyn Logger> {
+        self.logger.clone()
+    }
+
+    fn gather_metrics(&self) -> Result<String, ObserveError> {
+        self.hub.gather()
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct ExplainRecord {
     explain_id: String,
@@ -931,8 +971,19 @@ async fn record_tool_plan(
     Ok(())
 }
 
-fn record_chat_usage(
-    meter: &MeterRegistry,
+fn telemetry_to_ctx(telemetry: &RequestTelemetry) -> Option<ObserveCtx> {
+    telemetry.tenant.as_ref().map(|tenant| {
+        let mut ctx = ObserveCtx::for_tenant(tenant.clone());
+        ctx.subject_kind = telemetry.subject_kind.clone();
+        ctx.resource = telemetry.resource.clone();
+        ctx.action = telemetry.action.clone();
+        ctx
+    })
+}
+
+async fn record_chat_usage(
+    meter: &Arc<dyn Meter>,
+    logger: &Arc<dyn Logger>,
     telemetry: &RequestTelemetry,
     model_id: &str,
     usage: &Usage,
@@ -967,10 +1018,25 @@ fn record_chat_usage(
         requests = usage.requests,
         "chat usage recorded"
     );
+
+    if let Some(ctx) = telemetry_to_ctx(telemetry) {
+        let mut builder = LogBuilder::new(LogLevel::Info, "llm chat usage")
+            .label("model_id", model_id.to_string())
+            .label("source", source)
+            .field("input_tokens", json!(usage.input_tokens))
+            .field("output_tokens", json!(usage.output_tokens))
+            .field("requests", json!(usage.requests));
+        if let Some(cached) = usage.cached_tokens {
+            builder = builder.field("cached_tokens", json!(cached));
+        }
+        let event = builder.finish(&ctx, &NoopRedactor::default());
+        logger.log(&ctx, event).await;
+    }
 }
 
-fn record_embed_usage(
-    meter: &MeterRegistry,
+async fn record_embed_usage(
+    meter: &Arc<dyn Meter>,
+    logger: &Arc<dyn Logger>,
     telemetry: &RequestTelemetry,
     model_id: &str,
     usage: &Usage,
@@ -1001,10 +1067,21 @@ fn record_embed_usage(
         requests = usage.requests,
         "embed usage recorded"
     );
+
+    if let Some(ctx) = telemetry_to_ctx(telemetry) {
+        let event = LogBuilder::new(LogLevel::Info, "llm embed usage")
+            .label("model_id", model_id.to_string())
+            .field("items", json!(item_count))
+            .field("input_tokens", json!(usage.input_tokens))
+            .field("requests", json!(usage.requests))
+            .finish(&ctx, &NoopRedactor::default());
+        logger.log(&ctx, event).await;
+    }
 }
 
-fn record_rerank_usage(
-    meter: &MeterRegistry,
+async fn record_rerank_usage(
+    meter: &Arc<dyn Meter>,
+    logger: &Arc<dyn Logger>,
     telemetry: &RequestTelemetry,
     model_id: &str,
     usage: &Usage,
@@ -1035,6 +1112,16 @@ fn record_rerank_usage(
         requests = usage.requests,
         "rerank usage recorded"
     );
+
+    if let Some(ctx) = telemetry_to_ctx(telemetry) {
+        let event = LogBuilder::new(LogLevel::Info, "llm rerank usage")
+            .label("model_id", model_id.to_string())
+            .field("candidates", json!(candidate_count))
+            .field("input_tokens", json!(usage.input_tokens))
+            .field("output_tokens", json!(usage.output_tokens))
+            .finish(&ctx, &NoopRedactor::default());
+        logger.log(&ctx, event).await;
+    }
 }
 
 fn map_tool_error(err: ToolError) -> InterceptError {
@@ -1048,12 +1135,16 @@ fn map_llm_error(err: LlmError) -> InterceptError {
 fn build_tooling(
     datastore: Arc<SurrealDatastore>,
     facade: Arc<AuthFacade>,
+    observe: &Arc<ObserveSystem>,
 ) -> (Arc<dyn ToolRegistry>, Arc<dyn Invoker>) {
     let tool_registry: Arc<dyn ToolRegistry> =
         Arc::new(SurrealToolRegistry::new(datastore.clone()));
-    let sandbox = Sandbox::minimal();
+    let meter = observe.meter();
+    let logger = observe.logger();
+    let sandbox = Sandbox::minimal().with_telemetry(meter.clone(), logger.clone());
     let policy = PolicyConfig::default();
-    let invoker_impl = InvokerImpl::new(tool_registry.clone(), facade, sandbox, policy);
+    let invoker_impl = InvokerImpl::new(tool_registry.clone(), facade, sandbox, policy)
+        .with_observe(meter, logger);
     let tool_invoker: Arc<dyn Invoker> = Arc::new(invoker_impl);
     (tool_registry, tool_invoker)
 }
@@ -1063,21 +1154,26 @@ fn create_app_state(
     tool_registry: Arc<dyn ToolRegistry>,
     tool_invoker: Arc<dyn Invoker>,
     explain_store: Arc<dyn ExplainStore>,
+    observe: Arc<ObserveSystem>,
     chain: InterceptorChain,
-    meter: MeterRegistry,
 ) -> AppState {
     let mut registry = Registry::new();
     install_providers(&mut registry);
+
+    let meter = observe.meter();
+    let logger = observe.logger();
 
     AppState {
         registry: Arc::new(RwLock::new(registry)),
         policy: StructOutPolicy::StrictReject,
         chain: Arc::new(chain),
         meter,
+        logger,
         plan_store,
         tool_registry,
         tool_invoker,
         explain_store,
+        observe,
     }
 }
 
@@ -1108,22 +1204,23 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/plan/:plan_id", delete(plan_delete_handler))
         .route("/v1/explain/:explain_id", get(explain_handler))
         .route("/v1/explain/:explain_id/view", get(explain_view_handler))
+        .route("/metrics", get(metrics_handler))
         .with_state(state)
 }
 
 pub async fn default_state() -> anyhow::Result<AppState> {
     let datastore = init_surreal_datastore().await?;
     let auth = build_auth_wiring(Some(&datastore))?;
+    let observe = Arc::new(ObserveSystem::new());
     let plan_store: Arc<dyn PlanStore> = Arc::new(SurrealPlanStore::new(datastore.clone()));
     let explain_store: Arc<dyn ExplainStore> =
         Arc::new(SurrealExplainStore::new(datastore.clone()));
-    let meter = MeterRegistry::default();
     let AuthWiring {
         authenticator,
         facade,
     } = auth;
     let facade_for_tools = facade.clone();
-    let (tool_registry, tool_invoker) = build_tooling(datastore, facade_for_tools);
+    let (tool_registry, tool_invoker) = build_tooling(datastore, facade_for_tools, &observe);
     let chain = build_chain(AuthWiring {
         authenticator,
         facade: facade.clone(),
@@ -1133,15 +1230,42 @@ pub async fn default_state() -> anyhow::Result<AppState> {
         tool_registry,
         tool_invoker,
         explain_store,
+        observe,
         chain,
-        meter,
     ))
+}
+
+async fn metrics_handler(State(state): State<AppState>) -> Response {
+    match state.observe.gather_metrics() {
+        Ok(body) => Response::builder()
+            .status(StatusCode::OK)
+            .header(CONTENT_TYPE, "text/plain; version=0.0.4")
+            .body(Body::from(body))
+            .unwrap_or_else(|err| {
+                intercept_error(InterceptError::internal(&format!(
+                    "metrics response build failed: {err}"
+                )))
+            }),
+        Err(err) => {
+            let msg = format!("metrics gather failed: {err:?}");
+            Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .header(CONTENT_TYPE, "text/plain; charset=utf-8")
+                .body(Body::from(msg))
+                .unwrap_or_else(|err| {
+                    intercept_error(InterceptError::internal(&format!(
+                        "metrics error response build failed: {err}"
+                    )))
+                })
+        }
+    }
 }
 
 async fn chat_handler(State(state): State<AppState>, req: Request<Body>) -> Response {
     let registry = state.registry.clone();
     let policy = state.policy.clone();
     let meter = state.meter.clone();
+    let logger = state.logger.clone();
     let plan_store = state.plan_store.clone();
     let explain_store = state.explain_store.clone();
 
@@ -1149,6 +1273,7 @@ async fn chat_handler(State(state): State<AppState>, req: Request<Body>) -> Resp
         let registry = registry.clone();
         let policy = policy.clone();
         let meter = meter.clone();
+        let logger = logger.clone();
         let plan_store = plan_store.clone();
         let explain_store = explain_store.clone();
         let telemetry = extract_telemetry(ctx);
@@ -1171,7 +1296,15 @@ async fn chat_handler(State(state): State<AppState>, req: Request<Body>) -> Resp
                 .await
                 .map_err(|err| InterceptError::from_error(err.into_inner()))?;
 
-            record_chat_usage(&meter, &telemetry, &model_id, &response.usage, "sync");
+            record_chat_usage(
+                &meter,
+                &logger,
+                &telemetry,
+                &model_id,
+                &response.usage,
+                "sync",
+            )
+            .await;
             if let Some(ref tenant_id) = telemetry.tenant {
                 let tenant = TenantId(tenant_id.to_string());
                 record_tool_plan(
@@ -1220,10 +1353,12 @@ async fn chat_handler(State(state): State<AppState>, req: Request<Body>) -> Resp
 async fn embed_handler(State(state): State<AppState>, req: Request<Body>) -> Response {
     let registry = state.registry.clone();
     let meter = state.meter.clone();
+    let logger = state.logger.clone();
 
     handle_with_chain(req, &state.chain, move |ctx, preq| {
         let registry = registry.clone();
         let meter = meter.clone();
+        let logger = logger.clone();
         let telemetry = extract_telemetry(ctx);
         Box::pin(async move {
             let value = preq.read_json().await?;
@@ -1246,7 +1381,15 @@ async fn embed_handler(State(state): State<AppState>, req: Request<Body>) -> Res
                 .await
                 .map_err(|err| InterceptError::from_error(err.into_inner()))?;
 
-            record_embed_usage(&meter, &telemetry, &model_id, &response.usage, item_count);
+            record_embed_usage(
+                &meter,
+                &logger,
+                &telemetry,
+                &model_id,
+                &response.usage,
+                item_count,
+            )
+            .await;
 
             serde_json::to_value(response)
                 .map_err(|err| InterceptError::internal(&format!("encode response: {err}")))
@@ -1258,10 +1401,12 @@ async fn embed_handler(State(state): State<AppState>, req: Request<Body>) -> Res
 async fn rerank_handler(State(state): State<AppState>, req: Request<Body>) -> Response {
     let registry = state.registry.clone();
     let meter = state.meter.clone();
+    let logger = state.logger.clone();
 
     handle_with_chain(req, &state.chain, move |ctx, preq| {
         let registry = registry.clone();
         let meter = meter.clone();
+        let logger = logger.clone();
         let telemetry = extract_telemetry(ctx);
         Box::pin(async move {
             let value = preq.read_json().await?;
@@ -1286,11 +1431,13 @@ async fn rerank_handler(State(state): State<AppState>, req: Request<Body>) -> Re
 
             record_rerank_usage(
                 &meter,
+                &logger,
                 &telemetry,
                 &model_id,
                 &response.usage,
                 candidate_count,
-            );
+            )
+            .await;
 
             serde_json::to_value(response)
                 .map_err(|err| InterceptError::internal(&format!("encode response: {err}")))
@@ -1748,6 +1895,7 @@ async fn plan_execute_handler(State(state): State<AppState>, req: Request<Body>)
 async fn chat_stream_handler(State(state): State<AppState>, mut req: Request<Body>) -> Response {
     let plan_store = state.plan_store.clone();
     let explain_store = state.explain_store.clone();
+    let logger = state.logger.clone();
     let (headers, telemetry) = match enforce_chain(&mut req, &state.chain).await {
         Ok(parts) => parts,
         Err(resp) => return resp,
@@ -1780,6 +1928,7 @@ async fn chat_stream_handler(State(state): State<AppState>, mut req: Request<Bod
     let meter_stream = state.meter.clone();
     let plan_store_stream = plan_store.clone();
     let explain_store_stream = explain_store.clone();
+    let logger_stream = logger.clone();
     let plan_key_stream = plan_key.clone();
     let tenant_stream = telemetry.tenant.clone();
     let plan_acc_stream: Arc<Mutex<Vec<ToolCallProposal>>> = Arc::new(Mutex::new(Vec::new()));
@@ -1803,7 +1952,7 @@ async fn chat_stream_handler(State(state): State<AppState>, mut req: Request<Bod
 
                     if let Some(usage) = envelope.usage_partial.as_ref() {
                         if !usage_recorded {
-                            record_chat_usage(&meter_stream, &telemetry_stream, &model_id_stream, usage, "stream");
+                            record_chat_usage(&meter_stream, &logger_stream, &telemetry_stream, &model_id_stream, usage, "stream").await;
                             usage_recorded = true;
                         }
                     }
@@ -1871,7 +2020,7 @@ async fn chat_stream_handler(State(state): State<AppState>, mut req: Request<Bod
                 audio_seconds: None,
                 requests: 1,
             };
-            record_chat_usage(&meter_stream, &telemetry_stream, &model_id_stream, &usage, "stream");
+            record_chat_usage(&meter_stream, &logger_stream, &telemetry_stream, &model_id_stream, &usage, "stream").await;
         }
 
         if let Some(ref tenant_id) = tenant_stream {
@@ -2331,8 +2480,6 @@ mod tests {
 
     const BODY_LIMIT: usize = 1_048_576;
 
-    use std::sync::Arc;
-
     fn build_test_router() -> (Router, Arc<MemoryPlanStore>, Arc<ToolRegistryMemory>) {
         std::env::remove_var("OPENAI_API_KEY");
         std::env::remove_var("OPENAI_MODEL_ALIAS");
@@ -2342,20 +2489,21 @@ mod tests {
         let tool_registry = Arc::new(ToolRegistryMemory::new());
         let tool_registry_dyn: Arc<dyn ToolRegistry> = tool_registry.clone();
         let tool_auth = Arc::new(AuthFacade::minimal());
-        let sandbox = Sandbox::minimal();
+        let observe = Arc::new(ObserveSystem::new());
+        let sandbox = Sandbox::minimal().with_telemetry(observe.meter(), observe.logger());
         let policy = PolicyConfig::default();
         let invoker_impl = InvokerImpl::new(
             tool_registry_dyn.clone(),
             tool_auth.clone(),
             sandbox,
             policy,
-        );
+        )
+        .with_observe(observe.meter(), observe.logger());
         let tool_invoker: Arc<dyn Invoker> = Arc::new(invoker_impl);
         let chain = build_chain(AuthWiring {
             authenticator: Box::new(OidcAuthenticatorStub),
             facade: tool_auth.clone(),
         });
-        let meter = MeterRegistry::default();
         let plan_store_dyn: Arc<dyn PlanStore> = plan_store.clone();
         let explain_store_dyn: Arc<dyn ExplainStore> = explain_store.clone();
         let state = create_app_state(
@@ -2363,8 +2511,8 @@ mod tests {
             tool_registry_dyn,
             tool_invoker,
             explain_store_dyn,
+            observe,
             chain,
-            meter,
         );
 
         (build_router(state), plan_store, tool_registry)

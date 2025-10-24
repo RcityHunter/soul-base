@@ -7,12 +7,22 @@ use parking_lot::Mutex;
 use tokio::time::sleep;
 
 use crate::errors::NetError;
+#[cfg(feature = "auth")]
+use crate::interceptors::authz::AuthzInterceptor;
+#[cfg(feature = "observe")]
+use crate::interceptors::observe::ObserveInterceptor;
+use crate::interceptors::rate_limit::{RateLimitConfig, RateLimitInterceptor};
+use crate::interceptors::sign::{RequestSigner, SignatureConfig};
 use crate::interceptors::{Interceptor, InterceptorObject};
 use crate::metrics::NetMetrics;
 use crate::policy::{NetPolicy, RetryDecision};
 use crate::runtime::cbreaker::CircuitBreaker;
 use crate::runtime::retry::RetryState;
 use crate::types::{Body, NetRequest, NetResponse};
+#[cfg(feature = "auth")]
+use soulbase_auth::AuthFacade;
+#[cfg(feature = "observe")]
+use soulbase_observe::prelude::{Logger, Meter};
 
 #[async_trait]
 pub trait NetClient: Send + Sync {
@@ -40,6 +50,38 @@ impl ReqwestClient {
             _ => self.policy.retry.retry_on.should_retry_status(status),
         }
     }
+
+    fn map_status_error(&self, status: StatusCode) -> NetError {
+        let as_u16 = status.as_u16();
+        if self.policy.error_map.unauthorized.contains(&as_u16) {
+            return NetError::unauthorized("upstream unauthorized");
+        }
+        if self.policy.error_map.forbidden.contains(&as_u16) {
+            return NetError::forbidden("upstream forbidden");
+        }
+        if self.policy.error_map.rate_limited.contains(&as_u16) {
+            return NetError::rate_limited("upstream rate limited");
+        }
+        NetError::provider_unavailable(&format!("upstream returned status {status}"))
+    }
+
+    async fn notify_success(
+        &self,
+        request: &NetRequest,
+        response: &NetResponse,
+    ) -> Result<(), NetError> {
+        for interceptor in &self.interceptors {
+            interceptor.on_success(request, response).await?;
+        }
+        Ok(())
+    }
+
+    async fn notify_error(&self, request: &NetRequest, error: &NetError) -> Result<(), NetError> {
+        for interceptor in &self.interceptors {
+            interceptor.on_error(request, error).await?;
+        }
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -56,7 +98,9 @@ impl NetClient for ReqwestClient {
             if let Some(limit) = self.policy.limits.max_body_bytes {
                 if let Some(bytes) = attempt_request.body.as_bytes() {
                     if bytes.len() > limit {
-                        return Err(NetError::schema("request body exceeds max_body_bytes"));
+                        let err = NetError::schema("request body exceeds max_body_bytes");
+                        self.notify_error(&attempt_request, &err).await?;
+                        return Err(err);
                     }
                 }
             }
@@ -108,9 +152,11 @@ impl NetClient for ReqwestClient {
                                 let mut circuit = self.circuit.lock();
                                 circuit.record_failure();
                             }
-                            return Err(NetError::provider_unavailable(
+                            let err = NetError::provider_unavailable(
                                 "response exceeded max_response_bytes",
-                            ));
+                            );
+                            self.notify_error(&attempt_request, &err).await?;
+                            return Err(err);
                         }
                     }
 
@@ -121,7 +167,9 @@ impl NetClient for ReqwestClient {
                             let mut circuit = self.circuit.lock();
                             circuit.record_success();
                         }
-                        return Ok(NetResponse::new(status, headers, body_bytes, elapsed));
+                        let response = NetResponse::new(status, headers, body_bytes, elapsed);
+                        self.notify_success(&attempt_request, &response).await?;
+                        return Ok(response);
                     }
 
                     let decision = attempt_request.retry_decision.clone();
@@ -144,9 +192,9 @@ impl NetClient for ReqwestClient {
                         let mut circuit = self.circuit.lock();
                         circuit.record_failure();
                     }
-                    return Err(NetError::provider_unavailable(&format!(
-                        "upstream returned status {status}"
-                    )));
+                    let err = self.map_status_error(status);
+                    self.notify_error(&attempt_request, &err).await?;
+                    return Err(err);
                 }
                 Err(err) => {
                     let decision = attempt_request.retry_decision.clone();
@@ -188,9 +236,9 @@ impl NetClient for ReqwestClient {
                         let mut circuit = self.circuit.lock();
                         circuit.record_failure();
                     }
-                    return Err(NetError::provider_unavailable(&format!(
-                        "request error: {err}"
-                    )));
+                    let err = NetError::provider_unavailable(&format!("request error: {err}"));
+                    self.notify_error(&attempt_request, &err).await?;
+                    return Err(err);
                 }
             }
         }
@@ -227,6 +275,24 @@ impl ClientBuilder {
     {
         self.interceptors.push(Arc::new(interceptor));
         self
+    }
+
+    #[cfg(feature = "auth")]
+    pub fn with_authz(self, facade: Arc<AuthFacade>) -> Self {
+        self.with_interceptor(AuthzInterceptor::new(facade))
+    }
+
+    pub fn with_rate_limiter(self, config: RateLimitConfig) -> Self {
+        self.with_interceptor(RateLimitInterceptor::new(config))
+    }
+
+    pub fn with_request_signer(self, config: SignatureConfig) -> Self {
+        self.with_interceptor(RequestSigner::new(config))
+    }
+
+    #[cfg(feature = "observe")]
+    pub fn with_observe(self, meter: Arc<dyn Meter>, logger: Arc<dyn Logger>) -> Self {
+        self.with_interceptor(ObserveInterceptor::new(meter, logger))
     }
 
     pub fn with_metrics(mut self, metrics: NetMetrics) -> Self {

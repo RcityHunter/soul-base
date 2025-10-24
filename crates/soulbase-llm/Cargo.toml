@@ -27,6 +27,7 @@ service = [
     "soulbase-auth/stores-surreal",
     "soulbase-tools/registry_surreal",
     "soulbase-tools/observe",
+    "soulbase-sandbox/observe",
     "soulbase-observe/prometheus"
 ]
 

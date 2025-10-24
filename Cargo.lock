@@ -5204,7 +5204,9 @@ name = "soulbase-net"
 version = "1.0.0"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "bytes",
+ "hmac",
  "http 1.3.1",
  "http-body-util",
  "hyper 1.7.0",
@@ -5215,8 +5217,11 @@ dependencies = [
  "reqwest 0.12.23",
  "serde",
  "serde_json",
+ "sha2",
+ "soulbase-auth",
  "soulbase-errors",
  "soulbase-observe",
+ "soulbase-types",
  "thiserror 1.0.69",
  "tokio",
  "url",

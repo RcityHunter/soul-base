@@ -72,7 +72,7 @@ pub struct InvokerImpl {
     #[cfg(feature = "outbox")]
     outbox: Option<Arc<dyn OutboxStore>>,
     #[cfg(feature = "observe")]
-    meter: MeterRegistry,
+    meter: Arc<dyn Meter>,
     #[cfg(feature = "observe")]
     logger: Arc<dyn Logger>,
 }
@@ -94,14 +94,14 @@ impl InvokerImpl {
             #[cfg(feature = "outbox")]
             outbox: None,
             #[cfg(feature = "observe")]
-            meter: MeterRegistry::default(),
+            meter: Arc::new(MeterRegistry::default()),
             #[cfg(feature = "observe")]
             logger: Arc::new(soulbase_observe::prelude::NoopLogger::default()),
         }
     }
 
     #[cfg(feature = "observe")]
-    pub fn with_observe(mut self, meter: MeterRegistry, logger: Arc<dyn Logger>) -> Self {
+    pub fn with_observe(mut self, meter: Arc<dyn Meter>, logger: Arc<dyn Logger>) -> Self {
         self.meter = meter;
         self.logger = logger;
         self

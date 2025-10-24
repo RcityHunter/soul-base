@@ -15,7 +15,7 @@ use soulbase_types::prelude::Id;
 #[cfg(feature = "observe")]
 use self::telemetry::SandboxTelemetry;
 #[cfg(feature = "observe")]
-use soulbase_observe::prelude::{Logger, MeterRegistry};
+use soulbase_observe::prelude::{Logger, Meter};
 #[cfg(feature = "observe")]
 use std::sync::Arc;
 #[cfg(feature = "observe")]
@@ -50,7 +50,7 @@ impl Sandbox {
     }
 
     #[cfg(feature = "observe")]
-    pub fn with_telemetry(mut self, meter: MeterRegistry, logger: Arc<dyn Logger>) -> Self {
+    pub fn with_telemetry(mut self, meter: Arc<dyn Meter>, logger: Arc<dyn Logger>) -> Self {
         self.telemetry = Some(SandboxTelemetry::new(meter, logger));
         self
     }
