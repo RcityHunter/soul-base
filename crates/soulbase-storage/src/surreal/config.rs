@@ -44,3 +44,29 @@ impl SurrealConfig {
         self
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::SurrealConfig;
+
+    #[test]
+    fn default_config_uses_mem_endpoint() {
+        let cfg = SurrealConfig::default();
+        assert_eq!(cfg.endpoint, "mem://");
+        assert_eq!(cfg.namespace, "soul");
+        assert_eq!(cfg.database, "default");
+        assert!(cfg.username.is_none());
+        assert!(cfg.password.is_none());
+    }
+
+    #[test]
+    fn new_with_credentials_sets_fields() {
+        let cfg = SurrealConfig::new("ws://remote", "ns", "db")
+            .with_credentials("user", "pass");
+        assert_eq!(cfg.endpoint, "ws://remote");
+        assert_eq!(cfg.namespace, "ns");
+        assert_eq!(cfg.database, "db");
+        assert_eq!(cfg.username.as_deref(), Some("user"));
+        assert_eq!(cfg.password.as_deref(), Some("pass"));
+    }
+}

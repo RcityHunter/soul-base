@@ -163,3 +163,73 @@ impl Datastore for MockDatastore {
         Ok(MockSession::new(self.clone()))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use soulbase_types::prelude::TenantId;
+
+    fn tenant() -> TenantId {
+        TenantId("tenant-mock".into())
+    }
+
+    #[tokio::test]
+    async fn records_cycle_through_store_fetch_remove() {
+        let store = MockDatastore::new();
+        let tenant = tenant();
+        store.store("doc", &tenant, "id-1", json!({"field": 1}));
+
+        assert_eq!(
+            store.fetch("doc", &tenant, "id-1").unwrap(),
+            json!({"field": 1})
+        );
+        assert_eq!(store.list("doc", &tenant).len(), 1);
+
+        let removed = store.remove("doc", &tenant, "id-1").unwrap();
+        assert_eq!(removed, json!({"field": 1}));
+        assert!(store.fetch("doc", &tenant, "id-1").is_none());
+    }
+
+    #[tokio::test]
+    async fn relations_attach_and_detach() {
+        let store = MockDatastore::new();
+        let tenant = tenant();
+        store.store("doc", &tenant, "from", json!({"id": "from"}));
+        store.store("doc", &tenant, "to", json!({"id": "to"}));
+
+        store.relate(
+            "doc",
+            &tenant,
+            "from",
+            "likes",
+            "to",
+            json!({"weight": 2}),
+        );
+
+        let outbound = store.out("doc", &tenant, "from", "likes");
+        assert_eq!(outbound.len(), 1);
+        assert_eq!(outbound[0].0, "to");
+        assert_eq!(outbound[0].1, json!({"weight": 2}));
+
+        store.detach("doc", &tenant, "from", "likes", "to");
+        assert!(store.out("doc", &tenant, "from", "likes").is_empty());
+    }
+
+    #[tokio::test]
+    async fn vectors_support_upsert_iteration_and_remove() {
+        let store = MockDatastore::new();
+        let tenant = tenant();
+
+        store.upsert_vector("vec", &tenant, "v1", vec![1.0, 0.0]);
+        store.upsert_vector("vec", &tenant, "v2", vec![0.0, 1.0]);
+
+        let iterated = store.iter_vectors("vec", &tenant);
+        assert_eq!(iterated.len(), 2);
+
+        assert_eq!(store.get_vector("vec", &tenant, "v1"), Some(vec![1.0, 0.0]));
+
+        store.remove_vector("vec", &tenant, "v1");
+        assert!(store.get_vector("vec", &tenant, "v1").is_none());
+    }
+}

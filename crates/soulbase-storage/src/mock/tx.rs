@@ -61,3 +61,46 @@ impl Transaction for MockTransaction {
         !self.closed.load(Ordering::SeqCst)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use soulbase_types::prelude::TenantId;
+
+    fn new_tx() -> MockTransaction {
+        let store = MockDatastore::new();
+        store.store("doc", &TenantId("tenant".into()), "id", serde_json::Value::Null);
+        MockTransaction::new(store)
+    }
+
+    #[tokio::test]
+    async fn commit_marks_transaction_closed() {
+        let mut tx = new_tx();
+        assert!(tx.is_active());
+        tx.commit().await.expect("commit");
+        assert!(!tx.is_active());
+        let err = tx.commit().await.expect_err("second commit fails");
+        assert!(err.to_string().contains("transaction already closed"));
+    }
+
+    #[tokio::test]
+    async fn rollback_behaves_like_commit() {
+        let mut tx = new_tx();
+        tx.rollback().await.expect("rollback");
+        assert!(!tx.is_active());
+        let err = tx.rollback().await.expect_err("second rollback fails");
+        assert!(err.to_string().contains("transaction already closed"));
+    }
+
+    #[tokio::test]
+    async fn query_is_not_supported() {
+        let tx = new_tx();
+        let err = tx
+            .query("SELECT * FROM doc", serde_json::Value::Null)
+            .await
+            .expect_err("query should fail");
+        assert!(err
+            .to_string()
+            .contains("mock transaction does not support raw queries"));
+    }
+}

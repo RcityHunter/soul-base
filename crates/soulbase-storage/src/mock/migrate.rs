@@ -40,3 +40,30 @@ impl Migrator for InMemoryMigrator {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn migrator_tracks_versions_and_resets() {
+        let migrator = InMemoryMigrator::new();
+        assert_eq!(migrator.current_version().await.unwrap(), "none");
+
+        let scripts = vec![MigrationScript {
+            version: "2024-01-01__init".into(),
+            up_sql: "DEFINE TABLE doc".into(),
+            down_sql: "REMOVE TABLE doc".into(),
+            checksum: "sha256:test".into(),
+        }];
+
+        migrator.apply_up(&scripts).await.unwrap();
+        assert_eq!(
+            migrator.current_version().await.unwrap(),
+            "2024-01-01__init"
+        );
+
+        migrator.apply_down(&scripts).await.unwrap();
+        assert_eq!(migrator.current_version().await.unwrap(), "none");
+    }
+}

@@ -49,3 +49,50 @@ impl SearchStore for InMemorySearch {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde::{Deserialize, Serialize};
+    use serde_json::json;
+
+    #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+    struct Doc {
+        id: String,
+        tenant: TenantId,
+    }
+
+    impl Entity for Doc {
+        const TABLE: &'static str = "doc";
+
+        fn id(&self) -> &str {
+            &self.id
+        }
+
+        fn tenant(&self) -> &TenantId {
+            &self.tenant
+        }
+    }
+
+    #[tokio::test]
+    async fn search_is_case_insensitive_and_limited() {
+        let store = MockDatastore::new();
+        let tenant = TenantId("tenant-search".into());
+        for (id, title) in [("a", "Hello World"), ("b", "Other"), ("c", "HELLO AGAIN")] {
+            store.store(
+                "doc",
+                &tenant,
+                id,
+                json!({"id": id, "tenant": tenant.0.clone(), "title": title}),
+            );
+        }
+
+        let search = InMemorySearch::new::<Doc>(&store);
+        let page = search.search(&tenant, "hello", 1).await.unwrap();
+        assert_eq!(page.items.len(), 1);
+        assert!(page.items[0].to_string().to_lowercase().contains("hello"));
+
+        let page_all = search.search(&tenant, " ", 10).await.unwrap();
+        assert_eq!(page_all.items.len(), 3);
+    }
+}

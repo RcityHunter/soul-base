@@ -246,3 +246,90 @@ where
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::surreal::SurrealConfig;
+    use serde::{Deserialize, Serialize};
+    use serde_json::{json, Value};
+
+    #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+    struct Doc {
+        id: String,
+        tenant: TenantId,
+        name: String,
+    }
+
+    impl Entity for Doc {
+        const TABLE: &'static str = "doc";
+
+        fn id(&self) -> &str {
+            &self.id
+        }
+
+        fn tenant(&self) -> &TenantId {
+            &self.tenant
+        }
+    }
+
+    async fn repo() -> SurrealRepository<Doc> {
+        let datastore = SurrealDatastore::connect(SurrealConfig::default())
+            .await
+            .expect("connect surreal mem");
+        SurrealRepository::new(&datastore)
+    }
+
+    #[tokio::test]
+    async fn record_key_strips_table_prefix() {
+        let repo = repo().await;
+        assert_eq!(repo.record_key("doc:abc"), "abc");
+        assert_eq!(repo.record_key("plain"), "plain");
+    }
+
+    #[test]
+    fn normalize_row_converts_thing_ids() {
+        let row = json!({
+            "id": {"Thing": {"tb": "doc", "id": "abc"}},
+            "tenant": "tenant"
+        });
+        let normalized = SurrealRepository::<Doc>::normalize_row(row, "doc");
+        assert_eq!(normalized["id"], Value::String("doc:abc".into()));
+    }
+
+    #[test]
+    fn normalize_row_strips_brackets() {
+        let row = json!({"id": "⟨doc:abc⟩", "tenant": "tenant"});
+        let normalized = SurrealRepository::<Doc>::normalize_row(row, "doc");
+        assert_eq!(normalized["id"], Value::String("doc:abc".into()));
+    }
+
+    #[test]
+    fn deserialize_entity_maps_to_struct() {
+        let row = json!({"id": "doc:abc", "tenant": "tenant", "name": "hello"});
+        let doc = SurrealRepository::<Doc>::deserialize_entity(row, "doc").unwrap();
+        assert_eq!(doc.name, "hello");
+    }
+
+    #[tokio::test]
+    async fn build_filter_clause_includes_conditions() {
+        let repo = repo().await;
+        let params = QueryParams {
+            filter: json!({"state": "active", "meta.value": 1}),
+            order_by: Some("created_at DESC".into()),
+            limit: Some(5),
+            cursor: None,
+        };
+        let tenant = TenantId("tenant".into());
+        let (clause, bindings) = repo.build_filter_clause(&tenant, &params);
+        assert!(clause.contains("tenant = $tenant"));
+        assert!(clause.contains("state = $filter_state"));
+        assert!(clause.contains("meta.value = $filter_meta_value"));
+        assert!(clause.contains("ORDER BY created_at DESC"));
+        assert!(clause.contains("LIMIT 5"));
+        let bindings = bindings.as_object().unwrap();
+        assert_eq!(bindings.get("tenant"), Some(&Value::String("tenant".into())));
+        assert_eq!(bindings.get("filter_state"), Some(&Value::String("active".into())));
+        assert_eq!(bindings.get("filter_meta_value"), Some(&Value::from(1)));
+    }
+}

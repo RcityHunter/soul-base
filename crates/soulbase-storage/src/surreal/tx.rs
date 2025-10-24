@@ -95,3 +95,34 @@ impl Transaction for SurrealTransaction {
         self.active.load(Ordering::SeqCst)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::spi::datastore::Datastore;
+    use crate::spi::session::Session;
+    use crate::surreal::{SurrealConfig, SurrealDatastore};
+
+    #[tokio::test]
+    async fn commit_and_rollback_toggle_activity() {
+        let datastore = SurrealDatastore::connect(SurrealConfig::default())
+            .await
+            .expect("connect mem surreal");
+        let session = datastore.session().await.expect("session");
+        let mut tx = session.begin().await.expect("begin");
+        assert!(tx.is_active());
+        tx.commit().await.expect("commit");
+        assert!(!tx.is_active());
+        tx.commit()
+            .await
+            .expect_err("commit after close should fail");
+
+        let session = datastore.session().await.expect("session again");
+        let mut tx = session.begin().await.expect("begin again");
+        tx.rollback().await.expect("rollback");
+        assert!(!tx.is_active());
+        tx.rollback()
+            .await
+            .expect_err("rollback after close should fail");
+    }
+}

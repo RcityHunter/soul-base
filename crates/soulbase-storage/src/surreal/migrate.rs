@@ -149,3 +149,32 @@ impl Migrator for SurrealMigrator {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::surreal::{SurrealConfig, SurrealDatastore};
+
+    #[tokio::test]
+    async fn migrator_tracks_versions() {
+        let datastore = SurrealDatastore::connect(SurrealConfig::default())
+            .await
+            .expect("connect surreal");
+        let migrator = datastore.migrator();
+
+        assert_eq!(migrator.current_version().await.unwrap(), "none");
+
+        let scripts = vec![MigrationScript {
+            version: "2024-test".into(),
+            up_sql: "DEFINE TABLE doc SCHEMALESS".into(),
+            down_sql: "REMOVE TABLE doc".into(),
+            checksum: "sha256:test".into(),
+        }];
+
+        migrator.apply_up(&scripts).await.unwrap();
+        assert_eq!(migrator.current_version().await.unwrap(), "2024-test");
+
+        migrator.apply_down(&scripts).await.unwrap();
+        assert_eq!(migrator.current_version().await.unwrap(), "none");
+    }
+}
