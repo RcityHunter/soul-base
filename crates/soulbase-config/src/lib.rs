@@ -1,4 +1,6 @@
 pub mod access;
+pub mod audit;
+pub mod catalog;
 pub mod errors;
 pub mod events;
 pub mod loader;
