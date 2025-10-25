@@ -108,3 +108,63 @@ async fn main() -> Result<(), ConfigError> {
     Ok(())
 }
 ```
+
+## CLI Utilities
+
+`soulbase-config` ships with `soulbase-configctl` (enabled by default) to export schema manifests
+and validate layered configuration with audit-friendly outputs.
+
+```bash
+# Export namespace schema & reload metadata to a single JSON document
+cargo run -p soulbase-config --bin soulbase-configctl -- schema \
+  --output var/config/catalog.schema.json
+
+# Validate sample configuration (file + env overlay), emit snapshot, provenance & diff
+cargo run -p soulbase-config --bin soulbase-configctl -- validate \
+  --file examples/config/dev.json \
+  --include-env \
+  --snapshot-out var/config/dev.snapshot.json \
+  --provenance-out var/config/dev.provenance.json \
+  --changes-out var/config/dev.changes.json
+```
+
+- `--overrides <file>` can inject temporary JSON overrides for pre-deploy checks.
+- `--baseline <file>` lets you compare against a previous snapshot; failed validations block
+  hot reloads that touch `BootOnly` or risky fields.
+- The generated `changes.json` uses the `ChangeRecord` format (path, old, new) for audit trails.
+
+### Infra Namespace
+
+Infrastructure wiring (Redis cache, S3 blob, Kafka queue) now lives under the `infra` namespace.
+Each section supports `{tenant}` placeholders so multi租户部署可以按需隔离 key/bucket/topic。
+
+```jsonc
+{
+  "infra": {
+    "cache": {
+      "local_capacity": 2048,
+      "redis": {
+        "url": "redis://127.0.0.1:6379",
+        "key_prefix": "soulbase:{tenant}:cache"
+      }
+    },
+    "blob": {
+      "backend": "s3",
+      "s3": {
+        "bucket": "soulbase-dev",
+        "region": "us-east-1",
+        "key_prefix": "tenants/{tenant}",
+        "enable_sse": true
+      }
+    },
+    "queue": {
+      "kind": "kafka",
+      "kafka": {
+        "brokers": ["localhost:9092"],
+        "topic_prefix": "soulbase.dev.{tenant}",
+        "acks": "all"
+      }
+    }
+  }
+}
+```

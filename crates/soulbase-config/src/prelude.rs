@@ -1,6 +1,11 @@
 pub use crate::{
     audit::{diff as diff_snapshot, ChangeRecord},
-    catalog::{bootstrap_catalog, export_namespace_docs, validator_as_trait, CatalogHandles},
+    catalog::{
+        bootstrap_catalog, export_namespace_docs, validator_as_trait, BlobBackendKind, BlobInfra,
+        CacheInfra, CatalogHandles, FsBlobConfig, InfraNamespace, KafkaQueueConfig,
+        KafkaSecurityConfig, LlmBudget, LlmNamespace, LlmProvider, QueueBackendKind, QueueInfra,
+        RedisCacheConfig, S3BlobConfig,
+    },
     errors::ConfigError,
     loader::{Loader, LoaderBuilder},
     model::{Checksum, KeyPath, NamespaceId, ReloadClass, SnapshotVersion},

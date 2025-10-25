@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use base64::Engine;
 use base64::engine::general_purpose::STANDARD_NO_PAD;
+use base64::Engine;
 use http::HeaderValue;
 use serde_json::Value;
 

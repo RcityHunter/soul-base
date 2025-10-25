@@ -53,3 +53,7 @@ serde_json = "1"
 jsonschema = "0.17"
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "time"] }
 hyper = { version = "1", features = ["http1", "server"] }
+
+[[bin]]
+name = "soulbase-configctl"
+path = "src/bin/configctl.rs"

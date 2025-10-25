@@ -1,0 +1,99 @@
+{
+  "llm": {
+    "default_provider": "openai",
+    "providers": {
+      "openai": {
+        "endpoint": "https://api.openai.com/v1",
+        "models": [
+          "gpt-4o-mini",
+          "gpt-4o"
+        ],
+        "auth_secret": "secret://env/OPENAI_API_KEY",
+        "telemetry_bucket": "llm-openai"
+      },
+      "bedrock": {
+        "endpoint": "https://bedrock.us-east-1.amazonaws.com",
+        "models": [
+          "anthropic.claude-3-5-sonnet-20240620-v1:0"
+        ],
+        "auth_secret": "secret://env/BEDROCK_SESSION",
+        "telemetry_bucket": "llm-bedrock"
+      }
+    },
+    "budgets": [
+      {
+        "id": "default",
+        "daily_usd": 250.0,
+        "monthly_usd": 5000.0,
+        "window_seconds": 86400
+      }
+    ],
+    "allow_tool_plan": true
+  },
+  "net": {
+    "retry": {
+      "max_attempts": 4,
+      "backoff_ms": 300,
+      "jitter": true
+    },
+    "rate_limit": {
+      "tokens_per_second": 40,
+      "burst": 120
+    },
+    "request_signer_secret": "secret://env/NET_SIGNER",
+    "allow_insecure": false
+  },
+  "observe": {
+    "tracing": {
+      "sample_ratio": 0.5,
+      "exporter": "otlp://localhost:4317"
+    },
+    "metrics": {
+      "prometheus_endpoint": "0.0.0.0:9100",
+      "retention_days": 14
+    },
+    "audit_topic": "soulbase.audit.dev"
+  },
+  "catalog": {
+    "snapshot_dir": "var/config/snapshots",
+    "changelog_file": "var/config/changelog.json",
+    "signer_key": "secret://env/CONFIG_SIGNER"
+  },
+  "infra": {
+    "cache": {
+      "local_capacity": 2048,
+      "default_ttl_seconds": 120,
+      "redis": {
+        "url": "redis://127.0.0.1:6379",
+        "key_prefix": "soulbase:{tenant}:cache"
+      }
+    },
+    "blob": {
+      "backend": "s3",
+      "fs": {
+        "root": "var/blob",
+        "bucket": "soulbase-dev",
+        "presign_secret": "dev-secret",
+        "key_prefix": "tenants/{tenant}"
+      },
+      "s3": {
+        "bucket": "soulbase-dev",
+        "region": "us-east-1",
+        "key_prefix": "tenants/{tenant}",
+        "enable_sse": true
+      }
+    },
+    "queue": {
+      "kind": "kafka",
+      "kafka": {
+        "brokers": [
+          "localhost:9092"
+        ],
+        "topic_prefix": "soulbase.dev.{tenant}",
+        "linger_ms": 20,
+        "delivery_timeout_ms": 45000,
+        "acks": "all"
+      }
+    }
+  }
+}

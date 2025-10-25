@@ -61,6 +61,33 @@ async fn catalog_bootstrap_and_boot_only_guard() {
             "snapshot_dir": "var/config/snapshots",
             "changelog_file": "var/config/changelog.json",
             "signer_key": "secret://env/CONFIG_SIGNER"
+        },
+        "infra": {
+            "cache": {
+                "local_capacity": 512,
+                "redis": {
+                    "url": "redis://127.0.0.1:6379",
+                    "key_prefix": "soulbase:{tenant}:cache"
+                }
+            },
+            "blob": {
+                "backend": "fs",
+                "fs": {
+                    "root": "var/blob",
+                    "bucket": "soulbase-dev",
+                    "presign_secret": "dev-secret",
+                    "key_prefix": "tenants/{tenant}"
+                }
+            },
+            "queue": {
+                "kind": "kafka",
+                "kafka": {
+                    "brokers": ["localhost:9092"],
+                    "topic_prefix": "soulbase.dev.{tenant}",
+                    "linger_ms": 25,
+                    "acks": "all"
+                }
+            }
         }
     });
 
@@ -94,4 +121,21 @@ async fn catalog_bootstrap_and_boot_only_guard() {
         .expect_err("boot-only change rejected");
     let dev_msg = err.into_inner().message_dev.expect("dev message");
     assert!(dev_msg.contains("net.allow_insecure"));
+
+    let mut queue_update = snapshot.tree().clone();
+    if let Some(obj) = queue_update.as_object_mut() {
+        access::set_path(
+            obj,
+            "infra.queue.kafka.topic_prefix",
+            serde_json::Value::String("override".into()),
+        );
+    }
+
+    let err = handles
+        .validator
+        .validate_delta(snapshot.tree(), &queue_update)
+        .await
+        .expect_err("queue topic change requires restart");
+    let dev_msg = err.into_inner().message_dev.expect("dev message");
+    assert!(dev_msg.contains("infra.queue.kafka.topic_prefix"));
 }

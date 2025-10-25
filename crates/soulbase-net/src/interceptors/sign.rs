@@ -1,8 +1,8 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
-use base64::Engine;
 use base64::engine::general_purpose::STANDARD_NO_PAD;
+use base64::Engine;
 use hmac::{Hmac, Mac};
 use http::header::{HeaderName, HeaderValue};
 use sha2::{Digest, Sha256};

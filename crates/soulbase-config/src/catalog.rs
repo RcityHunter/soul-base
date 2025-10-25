@@ -105,6 +105,188 @@ pub struct ObserveNamespace {
     pub audit_topic: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BlobBackendKind {
+    Fs,
+    S3,
+}
+
+impl Default for BlobBackendKind {
+    fn default() -> Self {
+        Self::Fs
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, Default)]
+pub struct CacheInfra {
+    #[serde(default = "CacheInfra::default_local_capacity")]
+    pub local_capacity: u64,
+    #[serde(default)]
+    pub default_ttl_seconds: Option<u64>,
+    #[serde(default)]
+    pub redis: Option<RedisCacheConfig>,
+}
+
+impl CacheInfra {
+    fn default_local_capacity() -> u64 {
+        1024
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct RedisCacheConfig {
+    pub url: String,
+    #[serde(default = "RedisCacheConfig::default_key_prefix")]
+    pub key_prefix: String,
+}
+
+impl RedisCacheConfig {
+    fn default_key_prefix() -> String {
+        "soulbase:{tenant}:cache".into()
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct BlobInfra {
+    #[serde(default)]
+    pub backend: BlobBackendKind,
+    #[serde(default)]
+    pub fs: Option<FsBlobConfig>,
+    #[serde(default)]
+    pub s3: Option<S3BlobConfig>,
+}
+
+impl Default for BlobInfra {
+    fn default() -> Self {
+        Self {
+            backend: BlobBackendKind::Fs,
+            fs: Some(FsBlobConfig::default()),
+            s3: None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct FsBlobConfig {
+    pub root: String,
+    #[serde(default = "FsBlobConfig::default_bucket")]
+    pub bucket: String,
+    #[serde(default = "FsBlobConfig::default_secret")]
+    pub presign_secret: String,
+    #[serde(default)]
+    pub key_prefix: Option<String>,
+}
+
+impl FsBlobConfig {
+    fn default_bucket() -> String {
+        "soulbase".into()
+    }
+
+    fn default_secret() -> String {
+        "dev-secret".into()
+    }
+}
+
+impl Default for FsBlobConfig {
+    fn default() -> Self {
+        Self {
+            root: "var/blob".into(),
+            bucket: Self::default_bucket(),
+            presign_secret: Self::default_secret(),
+            key_prefix: Some("tenants/{tenant}".into()),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct S3BlobConfig {
+    pub bucket: String,
+    pub region: String,
+    #[serde(default)]
+    pub key_prefix: Option<String>,
+    #[serde(default)]
+    pub enable_sse: bool,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum QueueBackendKind {
+    Kafka,
+    Noop,
+}
+
+impl Default for QueueBackendKind {
+    fn default() -> Self {
+        Self::Noop
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, Default)]
+pub struct QueueInfra {
+    #[serde(default)]
+    pub kind: QueueBackendKind,
+    #[serde(default)]
+    pub kafka: Option<KafkaQueueConfig>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct KafkaQueueConfig {
+    pub brokers: Vec<String>,
+    #[serde(default = "KafkaQueueConfig::default_topic_prefix")]
+    pub topic_prefix: String,
+    #[serde(default = "KafkaQueueConfig::default_linger_ms")]
+    pub linger_ms: u32,
+    #[serde(default = "KafkaQueueConfig::default_delivery_timeout_ms")]
+    pub delivery_timeout_ms: u64,
+    #[serde(default = "KafkaQueueConfig::default_acks")]
+    pub acks: String,
+    #[serde(default)]
+    pub security: Option<KafkaSecurityConfig>,
+}
+
+impl KafkaQueueConfig {
+    fn default_topic_prefix() -> String {
+        "soulbase".into()
+    }
+
+    fn default_linger_ms() -> u32 {
+        5
+    }
+
+    fn default_delivery_timeout_ms() -> u64 {
+        30_000
+    }
+
+    fn default_acks() -> String {
+        "all".into()
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, Default)]
+pub struct KafkaSecurityConfig {
+    #[serde(default)]
+    pub security_protocol: Option<String>,
+    #[serde(default)]
+    pub sasl_mechanism: Option<String>,
+    #[serde(default)]
+    pub sasl_username: Option<String>,
+    #[serde(default)]
+    pub sasl_password: Option<String>,
+    #[serde(default)]
+    pub ca_location: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, Default)]
+pub struct InfraNamespace {
+    #[serde(default)]
+    pub cache: Option<CacheInfra>,
+    #[serde(default)]
+    pub blob: Option<BlobInfra>,
+    #[serde(default)]
+    pub queue: Option<QueueInfra>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, Default)]
 pub struct ConfigCatalog {
     #[serde(default)]
@@ -156,6 +338,7 @@ where
     register_net_namespace(registry).await?;
     register_observe_namespace(registry).await?;
     register_catalog_namespace(registry).await?;
+    register_infra_namespace(registry).await?;
     Ok(())
 }
 
@@ -299,6 +482,133 @@ where
                 FieldMeta::new(ReloadClass::BootOnly)
                     .mark_sensitive()
                     .with_description("Secret reference used to sign snapshot manifests"),
+            ),
+        ],
+    )
+    .await
+}
+
+async fn register_infra_namespace<R>(registry: &R) -> Result<(), ConfigError>
+where
+    R: SchemaRegistry + ?Sized,
+{
+    use crate::schema::register_namespace_struct;
+
+    register_namespace_struct::<InfraNamespace, _>(
+        registry,
+        NamespaceId::new("infra"),
+        vec![
+            (
+                KeyPath::new("infra.cache.local_capacity"),
+                FieldMeta::new(ReloadClass::HotReloadRisky)
+                    .with_description("Local LRU capacity per tenant"),
+            ),
+            (
+                KeyPath::new("infra.cache.default_ttl_seconds"),
+                FieldMeta::new(ReloadClass::HotReloadSafe)
+                    .with_description("Default TTL for cache entries"),
+            ),
+            (
+                KeyPath::new("infra.cache.redis.url"),
+                FieldMeta::new(ReloadClass::BootOnly)
+                    .with_description("Redis connection URL for remote cache"),
+            ),
+            (
+                KeyPath::new("infra.cache.redis.key_prefix"),
+                FieldMeta::new(ReloadClass::BootOnly)
+                    .with_description("Key prefix template (supports {tenant})"),
+            ),
+            (
+                KeyPath::new("infra.blob.backend"),
+                FieldMeta::new(ReloadClass::BootOnly).with_description("Selected blob backend"),
+            ),
+            (
+                KeyPath::new("infra.blob.fs.root"),
+                FieldMeta::new(ReloadClass::BootOnly)
+                    .with_description("Filesystem root for blob storage"),
+            ),
+            (
+                KeyPath::new("infra.blob.fs.bucket"),
+                FieldMeta::new(ReloadClass::BootOnly)
+                    .with_description("Default logical bucket for FS backend"),
+            ),
+            (
+                KeyPath::new("infra.blob.fs.presign_secret"),
+                FieldMeta::new(ReloadClass::BootOnly)
+                    .mark_sensitive()
+                    .with_description("Secret used to sign presigned FS URLs"),
+            ),
+            (
+                KeyPath::new("infra.blob.fs.key_prefix"),
+                FieldMeta::new(ReloadClass::BootOnly)
+                    .with_description("Optional FS key prefix template"),
+            ),
+            (
+                KeyPath::new("infra.blob.s3.bucket"),
+                FieldMeta::new(ReloadClass::BootOnly)
+                    .with_description("S3 bucket (supports {tenant})"),
+            ),
+            (
+                KeyPath::new("infra.blob.s3.region"),
+                FieldMeta::new(ReloadClass::BootOnly).with_description("AWS region for S3 client"),
+            ),
+            (
+                KeyPath::new("infra.blob.s3.key_prefix"),
+                FieldMeta::new(ReloadClass::BootOnly)
+                    .with_description("Optional S3 key prefix template"),
+            ),
+            (
+                KeyPath::new("infra.blob.s3.enable_sse"),
+                FieldMeta::new(ReloadClass::BootOnly)
+                    .with_description("Enable AWS-managed server-side encryption"),
+            ),
+            (
+                KeyPath::new("infra.queue.kind"),
+                FieldMeta::new(ReloadClass::BootOnly).with_description("Selected queue backend"),
+            ),
+            (
+                KeyPath::new("infra.queue.kafka.brokers"),
+                FieldMeta::new(ReloadClass::BootOnly).with_description("Kafka bootstrap brokers"),
+            ),
+            (
+                KeyPath::new("infra.queue.kafka.topic_prefix"),
+                FieldMeta::new(ReloadClass::BootOnly)
+                    .with_description("Topic prefix template (supports {tenant})"),
+            ),
+            (
+                KeyPath::new("infra.queue.kafka.linger_ms"),
+                FieldMeta::new(ReloadClass::HotReloadRisky).with_description("Producer linger.ms"),
+            ),
+            (
+                KeyPath::new("infra.queue.kafka.delivery_timeout_ms"),
+                FieldMeta::new(ReloadClass::BootOnly).with_description("Producer delivery timeout"),
+            ),
+            (
+                KeyPath::new("infra.queue.kafka.acks"),
+                FieldMeta::new(ReloadClass::BootOnly).with_description("Kafka acks requirement"),
+            ),
+            (
+                KeyPath::new("infra.queue.kafka.security.security_protocol"),
+                FieldMeta::new(ReloadClass::BootOnly)
+                    .with_description("Kafka security.protocol override"),
+            ),
+            (
+                KeyPath::new("infra.queue.kafka.security.sasl_mechanism"),
+                FieldMeta::new(ReloadClass::BootOnly).with_description("Kafka SASL mechanism"),
+            ),
+            (
+                KeyPath::new("infra.queue.kafka.security.sasl_username"),
+                FieldMeta::new(ReloadClass::BootOnly).with_description("Kafka SASL username"),
+            ),
+            (
+                KeyPath::new("infra.queue.kafka.security.sasl_password"),
+                FieldMeta::new(ReloadClass::BootOnly)
+                    .mark_sensitive()
+                    .with_description("Kafka SASL password"),
+            ),
+            (
+                KeyPath::new("infra.queue.kafka.security.ca_location"),
+                FieldMeta::new(ReloadClass::BootOnly).with_description("Kafka CA certificate path"),
             ),
         ],
     )

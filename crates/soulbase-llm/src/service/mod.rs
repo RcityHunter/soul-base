@@ -1,3 +1,7 @@
+mod infra;
+mod outbox;
+mod runtime;
+
 use anyhow::{anyhow, Context};
 use async_trait::async_trait;
 use std::{
@@ -66,6 +70,7 @@ use soulbase_storage::surreal::{
 };
 use soulbase_storage::Migrator;
 use soulbase_storage::{Datastore, QueryExecutor};
+use soulbase_tx::prelude::SurrealTxStores;
 
 use crate::prelude::*;
 #[cfg(feature = "provider-claude")]
@@ -75,6 +80,9 @@ use crate::{GeminiConfig, GeminiProviderFactory};
 use crate::{LocalProviderFactory, Registry};
 #[cfg(feature = "provider-openai")]
 use crate::{OpenAiConfig, OpenAiProviderFactory};
+use infra::InfraManager;
+use outbox::{OutboxDispatcher, OutboxInvoker};
+use runtime::RuntimeConfig;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -89,6 +97,8 @@ pub struct AppState {
     tool_invoker: Arc<dyn Invoker>,
     explain_store: Arc<dyn ExplainStore>,
     observe: Arc<ObserveSystem>,
+    runtime: Arc<RuntimeConfig>,
+    infra: Arc<InfraManager>,
 }
 
 #[async_trait]
@@ -1136,6 +1146,7 @@ fn build_tooling(
     datastore: Arc<SurrealDatastore>,
     facade: Arc<AuthFacade>,
     observe: &Arc<ObserveSystem>,
+    infra: Arc<InfraManager>,
 ) -> (Arc<dyn ToolRegistry>, Arc<dyn Invoker>) {
     let tool_registry: Arc<dyn ToolRegistry> =
         Arc::new(SurrealToolRegistry::new(datastore.clone()));
@@ -1143,9 +1154,20 @@ fn build_tooling(
     let logger = observe.logger();
     let sandbox = Sandbox::minimal().with_telemetry(meter.clone(), logger.clone());
     let policy = PolicyConfig::default();
+    let stores = SurrealTxStores::new(datastore);
+    let outbox_store = Arc::new(stores.outbox());
+    let dead_store = Arc::new(stores.dead());
+    let dispatcher = Arc::new(OutboxDispatcher::new(
+        infra,
+        outbox_store.clone(),
+        dead_store,
+    ));
     let invoker_impl = InvokerImpl::new(tool_registry.clone(), facade, sandbox, policy)
-        .with_observe(meter, logger);
-    let tool_invoker: Arc<dyn Invoker> = Arc::new(invoker_impl);
+        .with_observe(meter, logger)
+        .with_outbox(outbox_store.clone());
+    let invoker_impl = Arc::new(invoker_impl);
+    let tool_invoker: Arc<dyn Invoker> =
+        Arc::new(OutboxInvoker::new(invoker_impl.clone(), dispatcher));
     (tool_registry, tool_invoker)
 }
 
@@ -1156,6 +1178,8 @@ fn create_app_state(
     explain_store: Arc<dyn ExplainStore>,
     observe: Arc<ObserveSystem>,
     chain: InterceptorChain,
+    runtime: Arc<RuntimeConfig>,
+    infra: Arc<InfraManager>,
 ) -> AppState {
     let mut registry = Registry::new();
     install_providers(&mut registry);
@@ -1174,6 +1198,8 @@ fn create_app_state(
         tool_invoker,
         explain_store,
         observe,
+        runtime,
+        infra,
     }
 }
 
@@ -1182,7 +1208,10 @@ pub async fn run() -> anyhow::Result<()> {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
-    let state = default_state().await?;
+    let runtime = Arc::new(runtime::load_runtime_config().await?);
+    let infra = Arc::new(InfraManager::new(runtime.infra.clone()));
+
+    let state = default_state(runtime, infra).await?;
     let app = build_router(state);
 
     let listen = std::env::var("LLM_LISTEN").unwrap_or_else(|_| "127.0.0.1:9000".into());
@@ -1208,7 +1237,10 @@ pub fn build_router(state: AppState) -> Router {
         .with_state(state)
 }
 
-pub async fn default_state() -> anyhow::Result<AppState> {
+pub async fn default_state(
+    runtime: Arc<RuntimeConfig>,
+    infra: Arc<InfraManager>,
+) -> anyhow::Result<AppState> {
     let datastore = init_surreal_datastore().await?;
     let auth = build_auth_wiring(Some(&datastore))?;
     let observe = Arc::new(ObserveSystem::new());
@@ -1220,7 +1252,8 @@ pub async fn default_state() -> anyhow::Result<AppState> {
         facade,
     } = auth;
     let facade_for_tools = facade.clone();
-    let (tool_registry, tool_invoker) = build_tooling(datastore, facade_for_tools, &observe);
+    let (tool_registry, tool_invoker) =
+        build_tooling(datastore, facade_for_tools, &observe, infra.clone());
     let chain = build_chain(AuthWiring {
         authenticator,
         facade: facade.clone(),
@@ -1232,6 +1265,8 @@ pub async fn default_state() -> anyhow::Result<AppState> {
         explain_store,
         observe,
         chain,
+        runtime,
+        infra,
     ))
 }
 

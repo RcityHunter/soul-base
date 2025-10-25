@@ -57,6 +57,8 @@ soulbase-interceptors = { path = "../soulbase-interceptors", version = "1.0.0", 
 soulbase-observe = { path = "../soulbase-observe", version = "1.0.0", optional = true, default-features = false, features = ["prometheus", "stdout"] }
 soulbase-sandbox = { path = "../soulbase-sandbox", version = "1.0.0", optional = true }
 soulbase-storage = { path = "../soulbase-storage", version = "1.0.0", optional = true, default-features = false, features = ["surreal"] }
+soulbase-config = { path = "../soulbase-config", version = "1.0.0" }
+soulbase-infra = { path = "../soulbase-infra", version = "1.0.0" }
 
 # internal crates
 soulbase-types = { path = "../soulbase-types", version = "1.0.0" }

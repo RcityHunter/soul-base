@@ -1,4 +1,5 @@
-﻿target/
+target/
 **/target/
 AGENTS.md
 .target
+var/

@@ -13,6 +13,27 @@ cargo check
 cargo test
 ```
 
+## Configuration & Runtime
+
+`soulbase-llm-service` now consumes configuration via `soulbase-config` and the unified
+`infra` schema. Provide runtime configuration with `LLM_CONFIG_PATHS` (comma or semicolon
+separated file list) and `LLM__` environment overrides. A sample lives in
+`examples/config/dev.json` alongside the `soulbase-configctl` CLI:
+
+```bash
+cargo run -p soulbase-config --bin soulbase-configctl -- \
+  validate --file examples/config/dev.json \
+  --snapshot-out var/config/llm.snapshot.json \
+  --changes-out var/config/llm.changes.json
+
+LLM_CONFIG_PATHS=examples/config/dev.json cargo run \
+  -p soulbase-llm --bin soulbase-llm-service --features service
+```
+
+The service materialises cache/blob/queue handles through `soulbase-infra`. Redis/S3/Kafka
+settings share `{tenant}` placeholders that resolve per request, backed by Surreal outbox
+delivery for tool invocation events.
+
 ## Features
 
 - `provider-local` – enable the built-in echo provider (default scaffold)
