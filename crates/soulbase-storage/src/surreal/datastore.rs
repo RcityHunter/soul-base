@@ -96,3 +96,20 @@ impl HealthCheck for SurrealDatastore {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::surreal::SurrealConfig;
+
+    #[tokio::test]
+    async fn connect_mem_datastore_and_ping() {
+        let cfg = SurrealConfig::default();
+        let datastore = SurrealDatastore::connect(cfg.clone())
+            .await
+            .expect("connect surreal mem store");
+        assert_eq!(datastore.config().namespace, cfg.namespace);
+        datastore.ping().await.expect("ping mem store");
+        datastore.shutdown().await.expect("shutdown");
+    }
+}
