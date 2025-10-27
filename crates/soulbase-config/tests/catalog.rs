@@ -98,7 +98,7 @@ async fn catalog_bootstrap_and_boot_only_guard() {
     let loader = Loader::builder()
         .with_registry(handles.registry.clone())
         .with_validator(validator_as_trait(&handles.validator))
-        .add_source(memory.clone() as Arc<dyn Source>)
+        .add_source_arc(memory.clone() as Arc<dyn Source>)
         .build();
 
     let snapshot = loader.load_once().await.expect("snapshot");
