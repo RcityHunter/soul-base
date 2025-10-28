@@ -2,10 +2,11 @@ use super::{
     binder::QueryBinder, errors::map_surreal_error, observe::record_backend, tx::SurrealTransaction,
 };
 use crate::errors::StorageError;
-use crate::spi::query::QueryExecutor;
+use crate::spi::query::{QueryExecutor, QueryOutcome, QueryStats};
 use crate::spi::session::Session;
 use async_trait::async_trait;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use std::time::Instant;
 use surrealdb::{engine::any::Any, Surreal};
@@ -23,14 +24,46 @@ impl SurrealSession {
     pub fn client(&self) -> &Surreal<Any> {
         &self.client
     }
+
+    async fn collect_indices(
+        &self,
+        statement: &str,
+        bindings: &[(String, Value)],
+    ) -> Option<Vec<String>> {
+        let trimmed = statement.trim().trim_end_matches(';');
+        let lower = trimmed.to_ascii_lowercase();
+        if !lower.starts_with("select") {
+            return None;
+        }
+        let explain_stmt = format!("EXPLAIN FOR {}", trimmed);
+        let mut prepared = self.client.query(explain_stmt);
+        for (key, value) in bindings {
+            prepared = prepared.bind((key.clone(), value.clone()));
+        }
+        let mut response = prepared.await.ok()?;
+        let mut plan_rows = response.take::<Vec<Value>>(0).ok()?;
+        let plan = plan_rows.pop()?;
+        let mut indices = Vec::new();
+        collect_indices_recursive(&plan, &mut indices);
+        indices.sort();
+        indices.dedup();
+        indices.sort();
+        indices.dedup();
+        if indices.is_empty() {
+            None
+        } else {
+            Some(indices)
+        }
+    }
 }
 
 #[async_trait]
 impl QueryExecutor for SurrealSession {
-    async fn query(&self, statement: &str, params: Value) -> Result<Value, StorageError> {
+    async fn query(&self, statement: &str, params: Value) -> Result<QueryOutcome, StorageError> {
+        let bindings = QueryBinder::into_bindings(params.clone());
         let mut prepared = self.client.query(statement);
-        for (key, value) in QueryBinder::into_bindings(params) {
-            prepared = prepared.bind((key, value));
+        for (key, value) in bindings.iter() {
+            prepared = prepared.bind((key.clone(), value.clone()));
         }
         let started = Instant::now();
         let mut response = prepared
@@ -49,8 +82,60 @@ impl QueryExecutor for SurrealSession {
         };
         let rows_json = rows;
         let latency = started.elapsed();
+        let plan_indices = self.collect_indices(statement, &bindings).await;
+        let tenant_guard = statement.to_ascii_lowercase().contains("where")
+            && statement.to_ascii_lowercase().contains("tenant");
+        let stats = build_query_stats(statement, tenant_guard, plan_indices);
+        if stats.full_scan {
+            let reason = stats
+                .degradation_reason
+                .clone()
+                .unwrap_or_else(|| "surreal query triggered full scan".into());
+            return Err(StorageError::bad_request(&reason));
+        }
         record_backend("surreal.query", latency, rows_json.len(), None);
-        Ok(Value::Array(rows_json))
+        Ok(QueryOutcome {
+            rows: rows_json,
+            stats,
+        })
+    }
+}
+
+fn build_query_stats(
+    statement: &str,
+    tenant_guard: bool,
+    plan_indices: Option<Vec<String>>,
+) -> QueryStats {
+    let hash = Sha256::digest(statement.as_bytes());
+    let query_hash = format!("sha256:{:x}", hash);
+    let mut stats = QueryStats {
+        indices_used: plan_indices,
+        query_hash: Some(query_hash),
+        degradation_reason: None,
+        full_scan: !tenant_guard,
+    };
+    if stats.full_scan {
+        stats.degradation_reason = Some("tenant filter missing; full scan detected".to_string());
+    }
+    stats
+}
+
+fn collect_indices_recursive(value: &Value, indices: &mut Vec<String>) {
+    match value {
+        Value::Object(map) => {
+            if let Some(Value::String(index)) = map.get("index") {
+                indices.push(index.clone());
+            }
+            for child in map.values() {
+                collect_indices_recursive(child, indices);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                collect_indices_recursive(item, indices);
+            }
+        }
+        _ => {}
     }
 }
 

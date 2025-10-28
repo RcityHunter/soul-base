@@ -1,8 +1,11 @@
 use super::datastore::SurrealDatastore;
 use crate::errors::StorageError;
-use crate::model::{Entity, Page, QueryParams};
+use crate::model::{
+    awareness::AwarenessEvent, causal::CausalEdge, recall::RecallChunk, timeline::TimelineEvent,
+    vector_manifest::VectorManifest, Entity, Page, QueryParams,
+};
 use crate::spi::datastore::Datastore;
-use crate::spi::query::QueryExecutor;
+use crate::spi::query::{QueryExecutor, QueryStats};
 use crate::spi::repo::Repository;
 use async_trait::async_trait;
 use serde_json::{json, Map, Value};
@@ -30,15 +33,14 @@ impl<E: Entity> SurrealRepository<E> {
         id.strip_prefix(&prefix).unwrap_or(id).to_string()
     }
 
-    async fn run_query(&self, statement: &str, params: Value) -> Result<Vec<Value>, StorageError> {
+    async fn run_query(
+        &self,
+        statement: &str,
+        params: Value,
+    ) -> Result<(Vec<Value>, QueryStats), StorageError> {
         let session = self.datastore.session().await?;
-        let value = session.query(statement, params).await?;
-        match value {
-            Value::Array(rows) => Ok(rows),
-            other => Err(StorageError::internal(&format!(
-                "surreal query expected array rows, got {other}"
-            ))),
-        }
+        let outcome = session.query(statement, params).await?;
+        Ok((outcome.rows, outcome.stats))
     }
 
     async fn ensure_not_exists(&self, tenant: &TenantId, id: &str) -> Result<(), StorageError> {
@@ -48,7 +50,7 @@ impl<E: Entity> SurrealRepository<E> {
             WHERE tenant = $tenant
             LIMIT 1;
         "#;
-        let rows = self
+        let (rows, _stats) = self
             .run_query(
                 statement,
                 json!({
@@ -95,17 +97,25 @@ impl<E: Entity> SurrealRepository<E> {
             .map_err(|err| StorageError::internal(&format!("deserialize entity: {err}")))
     }
 
-    fn build_filter_clause(&self, tenant: &TenantId, params: &QueryParams) -> (String, Value) {
+    fn build_filter_clause(
+        &self,
+        tenant: &TenantId,
+        params: &QueryParams,
+    ) -> (String, Value, Vec<String>, bool) {
         let mut conditions = vec!["tenant = $tenant".to_string()];
         let mut bindings = Map::new();
         bindings.insert("tenant".into(), Value::String(tenant.0.clone()));
 
+        let mut hinted_indices = Vec::new();
+        let mut has_filter = false;
         if let Value::Object(filter_map) = &params.filter {
+            has_filter = !filter_map.is_empty();
             for (key, value) in filter_map {
                 let bind_key = format!("filter_{}", key.replace('.', "_"));
                 conditions.push(format!("{key} = ${bind_key}"));
                 bindings.insert(bind_key, value.clone());
             }
+            hinted_indices.extend(self.infer_indices(filter_map));
         }
 
         let mut clause = format!("WHERE {}", conditions.join(" AND "));
@@ -116,7 +126,75 @@ impl<E: Entity> SurrealRepository<E> {
             clause.push_str(&format!(" LIMIT {}", limit));
         }
 
-        (clause, Value::Object(bindings))
+        (clause, Value::Object(bindings), hinted_indices, has_filter)
+    }
+
+    fn infer_indices(&self, filter_map: &Map<String, Value>) -> Vec<String> {
+        let mut indices = Vec::new();
+        let has_field = |key: &str| filter_map.get(key).filter(|v| !v.is_null()).is_some();
+        match self.table {
+            crate::surreal::schema::TABLE_TIMELINE_EVENT => {
+                if has_field("event_id") {
+                    indices.push("uniq_timeline_event".into());
+                }
+                if has_field("journey_id") {
+                    indices.push("idx_timeline_journey".into());
+                }
+                if has_field("thread_id") {
+                    indices.push("idx_timeline_thread".into());
+                }
+            }
+            crate::surreal::schema::TABLE_CAUSAL_EDGE => {
+                if has_field("edge_id") {
+                    indices.push("uniq_causal_edge".into());
+                }
+                if has_field("source_event_id") {
+                    indices.push("idx_causal_relation".into());
+                }
+                if has_field("target_event_id") {
+                    indices.push("idx_causal_target".into());
+                }
+            }
+            crate::surreal::schema::TABLE_RECALL_CHUNK => {
+                if has_field("chunk_id") {
+                    indices.push("uniq_recall_chunk".into());
+                }
+                if has_field("journey_id") {
+                    indices.push("idx_recall_journey".into());
+                }
+                if has_field("source_event_id") {
+                    indices.push("idx_recall_source".into());
+                }
+            }
+            crate::surreal::schema::TABLE_AWARENESS_EVENT => {
+                if has_field("awareness_id") {
+                    indices.push("uniq_awareness_event".into());
+                }
+                if has_field("journey_id") {
+                    indices.push("idx_awareness_timeline".into());
+                }
+            }
+            crate::surreal::schema::TABLE_VECTOR_MANIFEST => {
+                if has_field("index_id") {
+                    indices.push("uniq_vector_manifest".into());
+                }
+            }
+            crate::surreal::schema::TABLE_LLM_TOOL_PLAN => {
+                if has_field("plan_id") {
+                    indices.push("uniq_llm_plan".into());
+                }
+            }
+            crate::surreal::schema::TABLE_LLM_EXPLAIN => {
+                if has_field("explain_id") {
+                    indices.push("uniq_llm_explain".into());
+                }
+                if has_field("plan_id") {
+                    indices.push("idx_llm_explain_plan".into());
+                }
+            }
+            _ => {}
+        }
+        indices
     }
 }
 
@@ -139,15 +217,16 @@ where
         let statement = r#"
             CREATE type::thing($table, $key) CONTENT $data RETURN NONE;
         "#;
-        self.run_query(
-            statement,
-            json!({
-                "table": self.table,
-                "key": self.record_key(entity.id()),
-                "data": data,
-            }),
-        )
-        .await?;
+        let _ = self
+            .run_query(
+                statement,
+                json!({
+                    "table": self.table,
+                    "key": self.record_key(entity.id()),
+                    "data": data,
+                }),
+            )
+            .await?;
         Ok(())
     }
 
@@ -191,7 +270,7 @@ where
             WHERE tenant = $tenant
             LIMIT 1;
         "#;
-        let rows = self
+        let (rows, _stats) = self
             .run_query(
                 statement,
                 json!({
@@ -214,17 +293,29 @@ where
         tenant: &TenantId,
         params: QueryParams,
     ) -> Result<Page<E>, StorageError> {
-        let (clause, bindings) = self.build_filter_clause(tenant, &params);
+        let (clause, bindings, hinted_indices, has_filter) =
+            self.build_filter_clause(tenant, &params);
         let statement = format!(
             "SELECT *, type::string(id) AS id FROM {} {}",
             self.table, clause
         );
-        let rows = self.run_query(&statement, bindings).await?;
+        let (rows, mut stats) = self.run_query(&statement, bindings).await?;
+        if !hinted_indices.is_empty() {
+            stats.indices_used = Some(hinted_indices);
+        }
+        if has_filter && stats.indices_used.is_none() && stats.degradation_reason.is_none() {
+            stats.degradation_reason =
+                Some("no supporting index detected for filter; potential scan".into());
+        }
         let mut items = Vec::with_capacity(rows.len());
         for row in rows {
             items.push(Self::deserialize_entity(row, self.table)?);
         }
-        Ok(Page { items, next: None })
+        Ok(Page {
+            items,
+            next: None,
+            meta: Some(stats),
+        })
     }
 
     async fn delete(&self, tenant: &TenantId, id: &str) -> Result<(), StorageError> {
@@ -235,14 +326,21 @@ where
         let statement = r#"
             DELETE type::thing($table, $key);
         "#;
-        self.run_query(
-            statement,
-            json!({
-                "table": self.table,
-                "key": self.record_key(id),
-            }),
-        )
-        .await?;
+        let _ = self
+            .run_query(
+                statement,
+                json!({
+                    "table": self.table,
+                    "key": self.record_key(id),
+                }),
+            )
+            .await?;
         Ok(())
     }
 }
+
+pub type TimelineEventRepo = SurrealRepository<TimelineEvent>;
+pub type CausalEdgeRepo = SurrealRepository<CausalEdge>;
+pub type RecallChunkRepo = SurrealRepository<RecallChunk>;
+pub type AwarenessEventRepo = SurrealRepository<AwarenessEvent>;
+pub type VectorManifestRepo = SurrealRepository<VectorManifest>;

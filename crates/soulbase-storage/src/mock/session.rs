@@ -1,7 +1,7 @@
 use super::datastore::MockDatastore;
 use super::tx::MockTransaction;
 use crate::errors::StorageError;
-use crate::spi::query::QueryExecutor;
+use crate::spi::query::{QueryExecutor, QueryOutcome};
 use crate::spi::session::Session;
 use async_trait::async_trait;
 use serde_json::Value;
@@ -23,7 +23,7 @@ impl MockSession {
 
 #[async_trait]
 impl QueryExecutor for MockSession {
-    async fn query(&self, _statement: &str, _params: Value) -> Result<Value, StorageError> {
+    async fn query(&self, _statement: &str, _params: Value) -> Result<QueryOutcome, StorageError> {
         Err(StorageError::bad_request(
             "mock session does not support raw queries; use typed adapters",
         ))

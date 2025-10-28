@@ -32,7 +32,10 @@ pub use mapper::SurrealMapper;
 #[cfg(feature = "surreal")]
 pub use migrate::SurrealMigrator;
 #[cfg(feature = "surreal")]
-pub use repo::SurrealRepository;
+pub use repo::{
+    AwarenessEventRepo, CausalEdgeRepo, RecallChunkRepo, SurrealRepository, TimelineEventRepo,
+    VectorManifestRepo,
+};
 #[cfg(feature = "surreal")]
 pub use schema::{
     core_migration, llm_migration, migrations as schema_migrations, TABLE_AWARENESS_EVENT,

@@ -259,7 +259,7 @@ impl SurrealToolRegistry {
         tool: &ToolId,
     ) -> Result<Option<ToolState>, ToolError> {
         let session = self.session().await?;
-        let response = session
+        let outcome = session
             .query(
                 "SELECT VALUE {
                     tenant: tenant,
@@ -278,7 +278,7 @@ impl SurrealToolRegistry {
             )
             .await
             .map_err(ToolError::from)?;
-        let rows: Vec<serde_json::Value> = decode_records(response)?;
+        let rows = outcome.rows;
         if let Some(record_json) = rows.into_iter().next() {
             let state = value_to_state(record_json)?;
             self.cache_upsert(tenant, state.clone());
@@ -294,7 +294,7 @@ impl SurrealToolRegistry {
 
     async fn load_tenant(&self, tenant: &TenantId) -> Result<Vec<ToolState>, ToolError> {
         let session = self.session().await?;
-        let response = session
+        let outcome = session
             .query(
                 "SELECT VALUE {
                     tenant: tenant,
@@ -311,7 +311,7 @@ impl SurrealToolRegistry {
             )
             .await
             .map_err(ToolError::from)?;
-        let rows: Vec<serde_json::Value> = decode_records(response)?;
+        let rows = outcome.rows;
         let mut states = Vec::with_capacity(rows.len());
         for record_json in rows {
             states.push(value_to_state(record_json)?);
@@ -392,15 +392,6 @@ impl ToolRegistry for SurrealToolRegistry {
         };
 
         Ok(Self::filter_states(states, filter))
-    }
-}
-
-#[cfg(feature = "registry_surreal")]
-fn decode_records(value: serde_json::Value) -> Result<Vec<serde_json::Value>, ToolError> {
-    match value {
-        serde_json::Value::Array(items) => Ok(items),
-        serde_json::Value::Null => Ok(Vec::new()),
-        other => Ok(vec![other]),
     }
 }
 

@@ -203,6 +203,50 @@ async fn search_returns_matches() {
 }
 
 #[tokio::test]
+async fn mock_scans_are_counted() {
+    let datastore = MockDatastore::new();
+    let repo: InMemoryRepository<Doc> = InMemoryRepository::new(&datastore);
+    let tenant = TenantId("tenant-scan".into());
+
+    for idx in 0..3 {
+        let doc = Doc {
+            id: format!("doc:scan_{idx}"),
+            tenant: tenant.clone(),
+            title: format!("Doc {idx}"),
+            ver: 1,
+        };
+        repo.create(&tenant, &doc).await.unwrap();
+    }
+
+    assert_eq!(datastore.scan_count("doc", &tenant), 0);
+
+    let page = repo
+        .select(
+            &tenant,
+            QueryParams {
+                filter: json!({ "tenant": tenant.0 }),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(page.items.len(), 3);
+    assert_eq!(datastore.scan_count("doc", &tenant), 1);
+
+    let _ = repo
+        .select(
+            &tenant,
+            QueryParams {
+                filter: json!({ "tenant": tenant.0 }),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(datastore.scan_count("doc", &tenant), 2);
+}
+
+#[tokio::test]
 async fn mock_transaction_lifecycle() {
     let datastore = MockDatastore::new();
     let session_from_store = datastore.session().await.unwrap();

@@ -46,6 +46,7 @@ impl SearchStore for InMemorySearch {
         Ok(Page {
             items: hits,
             next: None,
+            meta: None,
         })
     }
 }

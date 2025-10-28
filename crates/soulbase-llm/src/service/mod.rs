@@ -1044,6 +1044,32 @@ async fn record_chat_usage(
     }
 }
 
+async fn log_query_degradation(
+    logger: &Arc<dyn Logger>,
+    telemetry: &RequestTelemetry,
+    meta: &Option<QueryStats>,
+) {
+    if let Some(stats) = meta {
+        if let Some(reason) = stats.degradation_reason.as_ref() {
+            let ctx = match telemetry_to_ctx(telemetry) {
+                Some(ctx) => ctx,
+                None => ObserveCtx::for_tenant("unknown".into()),
+            };
+            let indices = stats
+                .indices_used
+                .as_ref()
+                .map(|v| json!(v))
+                .unwrap_or_else(|| json!("<none>"));
+            let event = LogBuilder::new(LogLevel::Warn, "storage query degraded")
+                .field("reason", json!(reason))
+                .field("full_scan", json!(stats.full_scan))
+                .field("indices", indices)
+                .finish(&ctx, &NoopRedactor::default());
+            logger.log(&ctx, event).await;
+        }
+    }
+}
+
 async fn record_embed_usage(
     meter: &Arc<dyn Meter>,
     logger: &Arc<dyn Logger>,
@@ -1340,6 +1366,7 @@ async fn chat_handler(State(state): State<AppState>, req: Request<Body>) -> Resp
                 "sync",
             )
             .await;
+            log_query_degradation(&logger, &telemetry, &response.usage.plan_meta).await;
             if let Some(ref tenant_id) = telemetry.tenant {
                 let tenant = TenantId(tenant_id.to_string());
                 record_tool_plan(
@@ -1425,6 +1452,7 @@ async fn embed_handler(State(state): State<AppState>, req: Request<Body>) -> Res
                 item_count,
             )
             .await;
+            log_query_degradation(&logger, &telemetry, &response.usage.plan_meta).await;
 
             serde_json::to_value(response)
                 .map_err(|err| InterceptError::internal(&format!("encode response: {err}")))

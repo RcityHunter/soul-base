@@ -121,7 +121,11 @@ where
                 break;
             }
         }
-        Ok(Page { items, next: None })
+        Ok(Page {
+            items,
+            next: None,
+            meta: None,
+        })
     }
 
     async fn delete(&self, tenant: &TenantId, id: &str) -> Result<(), StorageError> {

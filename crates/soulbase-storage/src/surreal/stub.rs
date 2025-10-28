@@ -2,7 +2,7 @@ use crate::errors::StorageError;
 use crate::model::{Entity, Page, QueryParams};
 use crate::spi::datastore::Datastore;
 use crate::spi::migrate::{MigrationScript, Migrator};
-use crate::spi::query::QueryExecutor;
+use crate::spi::query::{QueryExecutor, QueryOutcome};
 use crate::spi::repo::Repository;
 use crate::spi::session::Session;
 use crate::spi::tx::Transaction;
@@ -30,7 +30,7 @@ pub struct SurrealSession;
 
 #[async_trait]
 impl QueryExecutor for SurrealSession {
-    async fn query(&self, _statement: &str, _params: Value) -> Result<Value, StorageError> {
+    async fn query(&self, _statement: &str, _params: Value) -> Result<QueryOutcome, StorageError> {
         Err(StorageError::unavailable(
             "Surreal query cannot run without the `surreal` feature",
         ))
@@ -53,7 +53,7 @@ pub struct SurrealTransaction;
 
 #[async_trait]
 impl QueryExecutor for SurrealTransaction {
-    async fn query(&self, _statement: &str, _params: Value) -> Result<Value, StorageError> {
+    async fn query(&self, _statement: &str, _params: Value) -> Result<QueryOutcome, StorageError> {
         Err(StorageError::unavailable(
             "Surreal transaction query requires the `surreal` feature",
         ))

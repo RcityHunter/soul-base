@@ -18,6 +18,7 @@ struct Inner {
     records: RwLock<HashMap<String, HashMap<String, serde_json::Value>>>,
     edges: RwLock<HashMap<String, Vec<EdgeRecord>>>,
     vectors: RwLock<HashMap<String, Vec<f32>>>,
+    scans: RwLock<HashMap<String, u64>>,
 }
 
 #[derive(Clone, Debug)]
@@ -70,10 +71,26 @@ impl MockDatastore {
     pub fn list(&self, table: &str, tenant: &TenantId) -> Vec<serde_json::Value> {
         let key = Self::table_key(table, tenant);
         self.inner
+            .scans
+            .write()
+            .entry(key.clone())
+            .and_modify(|count| *count += 1)
+            .or_insert(1);
+        self.inner
             .records
             .read()
             .get(&key)
             .map(|m| m.values().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    pub fn scan_count(&self, table: &str, tenant: &TenantId) -> u64 {
+        let key = Self::table_key(table, tenant);
+        self.inner
+            .scans
+            .read()
+            .get(&key)
+            .copied()
             .unwrap_or_default()
     }
 

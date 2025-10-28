@@ -102,10 +102,7 @@ async fn surreal_core_migration_applies() {
         )
         .await
         .expect("select timeline");
-    match timeline {
-        Value::Array(items) => assert!(!items.is_empty()),
-        other => panic!("unexpected timeline response: {other}"),
-    }
+    assert!(!timeline.rows.is_empty());
 
     datastore.shutdown().await.expect("shutdown");
 }

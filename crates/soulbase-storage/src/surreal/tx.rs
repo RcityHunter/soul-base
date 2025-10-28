@@ -1,6 +1,6 @@
 use super::{binder::QueryBinder, errors::map_surreal_error, observe::record_backend};
 use crate::errors::StorageError;
-use crate::spi::query::QueryExecutor;
+use crate::spi::query::{QueryExecutor, QueryOutcome, QueryStats};
 use crate::spi::tx::Transaction;
 use async_trait::async_trait;
 use serde_json::Value;
@@ -38,7 +38,7 @@ impl SurrealTransaction {
 
 #[async_trait]
 impl QueryExecutor for SurrealTransaction {
-    async fn query(&self, statement: &str, params: Value) -> Result<Value, StorageError> {
+    async fn query(&self, statement: &str, params: Value) -> Result<QueryOutcome, StorageError> {
         self.ensure_active()?;
         let mut prepared = self.client.query(statement);
         for (key, value) in QueryBinder::into_bindings(params) {
@@ -60,8 +60,17 @@ impl QueryExecutor for SurrealTransaction {
             }
         };
         let rows_json = rows;
+        let stats = QueryStats {
+            indices_used: None,
+            query_hash: None,
+            degradation_reason: None,
+            full_scan: false,
+        };
         record_backend("surreal.tx.query", started.elapsed(), rows_json.len(), None);
-        Ok(Value::Array(rows_json))
+        Ok(QueryOutcome {
+            rows: rows_json,
+            stats,
+        })
     }
 }
 
