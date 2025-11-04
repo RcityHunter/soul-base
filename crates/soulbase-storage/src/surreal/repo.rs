@@ -101,13 +101,14 @@ impl<E: Entity> SurrealRepository<E> {
         &self,
         tenant: &TenantId,
         params: &QueryParams,
-    ) -> (String, Value, Vec<String>, bool) {
+    ) -> (String, Value, Vec<String>, bool, bool) {
         let mut conditions = vec!["tenant = $tenant".to_string()];
         let mut bindings = Map::new();
         bindings.insert("tenant".into(), Value::String(tenant.0.clone()));
 
         let mut hinted_indices = Vec::new();
         let mut has_filter = false;
+        let mut filter_has_index = false;
         if let Value::Object(filter_map) = &params.filter {
             has_filter = !filter_map.is_empty();
             for (key, value) in filter_map {
@@ -115,18 +116,33 @@ impl<E: Entity> SurrealRepository<E> {
                 conditions.push(format!("{key} = ${bind_key}"));
                 bindings.insert(bind_key, value.clone());
             }
-            hinted_indices.extend(self.infer_indices(filter_map));
+            let filter_indices = self.infer_indices(filter_map);
+            if !filter_indices.is_empty() {
+                filter_has_index = true;
+                hinted_indices.extend(filter_indices);
+            }
         }
 
         let mut clause = format!("WHERE {}", conditions.join(" AND "));
-        if let Some(order) = &params.order_by {
+        let order_clause = params
+            .order_by
+            .as_deref()
+            .or_else(|| self.default_order_clause());
+        if let Some(order) = order_clause {
             clause.push_str(&format!(" ORDER BY {}", order));
+            hinted_indices.extend(self.infer_indices_from_order(order));
         }
         if let Some(limit) = params.limit {
             clause.push_str(&format!(" LIMIT {}", limit));
         }
 
-        (clause, Value::Object(bindings), hinted_indices, has_filter)
+        (
+            clause,
+            Value::Object(bindings),
+            hinted_indices,
+            has_filter,
+            filter_has_index,
+        )
     }
 
     fn infer_indices(&self, filter_map: &Map<String, Value>) -> Vec<String> {
@@ -196,6 +212,41 @@ impl<E: Entity> SurrealRepository<E> {
         }
         indices
     }
+
+    fn infer_indices_from_order(&self, order: &str) -> Vec<String> {
+        let mut indices = Vec::new();
+        let lower = order.to_ascii_lowercase();
+        match self.table {
+            crate::surreal::schema::TABLE_TIMELINE_EVENT => {
+                if lower.contains("journey_id") && lower.contains("occurred_at") {
+                    indices.push("idx_timeline_journey".into());
+                } else if lower.contains("thread_id") {
+                    indices.push("idx_timeline_thread".into());
+                }
+            }
+            crate::surreal::schema::TABLE_AWARENESS_EVENT => {
+                if lower.contains("journey_id") && lower.contains("triggered_at") {
+                    indices.push("idx_awareness_timeline".into());
+                }
+            }
+            crate::surreal::schema::TABLE_RECALL_CHUNK => {
+                if lower.contains("journey_id") && lower.contains("created_at") {
+                    indices.push("idx_recall_journey".into());
+                }
+            }
+            _ => {}
+        }
+        indices
+    }
+
+    fn default_order_clause(&self) -> Option<&'static str> {
+        match self.table {
+            crate::surreal::schema::TABLE_TIMELINE_EVENT => Some("journey_id, occurred_at"),
+            crate::surreal::schema::TABLE_AWARENESS_EVENT => Some("journey_id, triggered_at"),
+            crate::surreal::schema::TABLE_RECALL_CHUNK => Some("journey_id, created_at"),
+            _ => None,
+        }
+    }
 }
 
 #[async_trait]
@@ -209,11 +260,22 @@ where
         }
         self.ensure_not_exists(tenant, entity.id()).await?;
 
-        let mut data = serde_json::to_value(entity)
+        let mut payload = serde_json::to_value(entity)
             .map_err(|err| StorageError::internal(&format!("serialize entity: {err}")))?;
-        if let Value::Object(ref mut map) = data {
-            map.remove("id");
+        let key = self.record_key(entity.id());
+        match &mut payload {
+            Value::Object(map) => {
+                map.insert("tenant".into(), Value::String(tenant.0.clone()));
+                map.remove("id");
+            }
+            other => {
+                *other = json!({
+                    "tenant": tenant.0.clone(),
+                    "value": other.clone(),
+                });
+            }
         }
+
         let statement = r#"
             CREATE type::thing($table, $key) CONTENT $data RETURN NONE;
         "#;
@@ -222,8 +284,8 @@ where
                 statement,
                 json!({
                     "table": self.table,
-                    "key": self.record_key(entity.id()),
-                    "data": data,
+                    "key": key,
+                    "data": payload,
                 }),
             )
             .await?;
@@ -237,30 +299,81 @@ where
         patch: Value,
         _session: Option<&str>,
     ) -> Result<E, StorageError> {
-        let mut content = match patch {
-            Value::Object(map) => map,
+        if patch.get("tenant").is_some() {
+            return Err(StorageError::bad_request("tenant field cannot be updated"));
+        }
+        if patch.get("id").is_some() {
+            return Err(StorageError::bad_request("id field cannot be updated"));
+        }
+
+        let patch_map = match patch {
+            Value::Object(map) if !map.is_empty() => map,
+            Value::Object(_) => {
+                return self
+                    .get(tenant, id)
+                    .await?
+                    .ok_or_else(|| StorageError::internal("upsert fetch failed"))
+            }
             _ => return Err(StorageError::bad_request("upsert patch must be an object")),
         };
-        content.insert("tenant".into(), Value::String(tenant.0.clone()));
-        content.remove("id");
 
-        let statement = r#"
-            UPSERT type::thing($table, $key) CONTENT $data RETURN NONE;
-        "#;
+        let mut assignments = Vec::new();
+        let mut bindings = Map::new();
+        bindings.insert("table".into(), Value::String(self.table.to_string()));
+        bindings.insert("key".into(), Value::String(self.record_key(id)));
+        bindings.insert("tenant".into(), Value::String(tenant.0.clone()));
 
-        self.run_query(
-            statement,
-            json!({
-                "table": self.table,
-                "key": self.record_key(id),
-                "data": Value::Object(content),
-            }),
-        )
-        .await?;
+        let mut json_patches = Vec::new();
+        for (idx, (key, value)) in patch_map.into_iter().enumerate() {
+            let bind_key = format!("patch_{idx}");
+            match value {
+                Value::Object(_) | Value::Array(_) => {
+                    json_patches.push(json!({
+                        "op": "add",
+                        "path": format!("/{}", key),
+                        "value": value,
+                    }));
+                }
+                other => {
+                    assignments.push(format!("{key} = ${bind_key}"));
+                    bindings.insert(bind_key, other);
+                }
+            }
+        }
+        assignments.push("tenant = $tenant".to_string());
 
-        self.get(tenant, id)
-            .await?
-            .ok_or_else(|| StorageError::internal("upsert fetch failed"))
+        let statement = format!(
+            "UPDATE type::thing($table, $key) SET {} WHERE tenant = $tenant RETURN NONE;",
+            assignments.join(", ")
+        );
+
+        let (rows, _stats) = self.run_query(&statement, Value::Object(bindings)).await?;
+
+        let mut current = if let Some(row) = rows.into_iter().next() {
+            Self::deserialize_entity(row, self.table)?
+        } else if let Some(entity) = self.get(tenant, id).await? {
+            entity
+        } else {
+            return Err(StorageError::not_found("entity not found for upsert"));
+        };
+
+        if !json_patches.is_empty() {
+            self.run_query(
+                "UPDATE type::thing($table, $key) PATCH $ops RETURN NONE;",
+                json!({
+                    "table": self.table,
+                    "key": self.record_key(id),
+                    "ops": json_patches,
+                }),
+            )
+            .await?;
+            current = self
+                .get(tenant, id)
+                .await?
+                .ok_or_else(|| StorageError::internal("upsert fetch failed"))?;
+        }
+
+        Ok(current)
     }
 
     async fn get(&self, tenant: &TenantId, id: &str) -> Result<Option<E>, StorageError> {
@@ -280,7 +393,6 @@ where
                 }),
             )
             .await?;
-
         if let Some(row) = rows.into_iter().next() {
             Ok(Some(Self::deserialize_entity(row, self.table)?))
         } else {
@@ -293,7 +405,7 @@ where
         tenant: &TenantId,
         params: QueryParams,
     ) -> Result<Page<E>, StorageError> {
-        let (clause, bindings, hinted_indices, has_filter) =
+        let (clause, bindings, hinted_indices, has_filter, filter_has_index) =
             self.build_filter_clause(tenant, &params);
         let statement = format!(
             "SELECT *, type::string(id) AS id FROM {} {}",
@@ -303,7 +415,7 @@ where
         if !hinted_indices.is_empty() {
             stats.indices_used = Some(hinted_indices);
         }
-        if has_filter && stats.indices_used.is_none() && stats.degradation_reason.is_none() {
+        if has_filter && !filter_has_index && stats.degradation_reason.is_none() {
             stats.degradation_reason =
                 Some("no supporting index detected for filter; potential scan".into());
         }

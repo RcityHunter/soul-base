@@ -83,10 +83,11 @@ impl QueryExecutor for SurrealSession {
         let rows_json = rows;
         let latency = started.elapsed();
         let plan_indices = self.collect_indices(statement, &bindings).await;
-        let tenant_guard = statement.to_ascii_lowercase().contains("where")
-            && statement.to_ascii_lowercase().contains("tenant");
-        let stats = build_query_stats(statement, tenant_guard, plan_indices);
-        if stats.full_scan {
+        let lower_stmt = statement.to_ascii_lowercase();
+        let tenant_guard = lower_stmt.contains("where") && lower_stmt.contains("tenant");
+        let is_select = lower_stmt.trim_start().starts_with("select");
+        let stats = build_query_stats(statement, tenant_guard, plan_indices, is_select);
+        if is_select && stats.full_scan {
             let reason = stats
                 .degradation_reason
                 .clone()
@@ -105,19 +106,22 @@ fn build_query_stats(
     statement: &str,
     tenant_guard: bool,
     plan_indices: Option<Vec<String>>,
+    is_select: bool,
 ) -> QueryStats {
     let hash = Sha256::digest(statement.as_bytes());
     let query_hash = format!("sha256:{:x}", hash);
-    let mut stats = QueryStats {
+    let full_scan = is_select && !tenant_guard;
+    let degradation_reason = if full_scan {
+        Some("tenant filter missing; full scan detected".to_string())
+    } else {
+        None
+    };
+    QueryStats {
         indices_used: plan_indices,
         query_hash: Some(query_hash),
-        degradation_reason: None,
-        full_scan: !tenant_guard,
-    };
-    if stats.full_scan {
-        stats.degradation_reason = Some("tenant filter missing; full scan detected".to_string());
+        degradation_reason,
+        full_scan,
     }
-    stats
 }
 
 fn collect_indices_recursive(value: &Value, indices: &mut Vec<String>) {

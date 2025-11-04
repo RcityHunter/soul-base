@@ -12,7 +12,7 @@ mock = []
 surreal = ["dep:surrealdb"]
 vector = []
 fulltext = []
-migrate = []
+migrate = ["dep:clap", "dep:tokio"]
 pool = []
 qos = []
 observe = ["dep:tracing"]
@@ -30,6 +30,7 @@ tracing = { version = "0.1", optional = true }
 clap = { version = "4.5", features = ["derive"], optional = true }
 surrealdb = { version = "2.3.0", optional = true, default-features = false, features = ["kv-mem", "protocol-http", "protocol-ws", "rustls"] }
 sha2 = "0.10"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"], optional = true }
 
 soulbase-types = { path = "../soulbase-types", version = "1.0.0" }
 soulbase-errors = { path = "../soulbase-errors", version = "1.0.0" }
@@ -40,4 +41,4 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 [[bin]]
 name = "soulbase-storage-migrate"
 path = "src/bin/storage-migrate.rs"
-required-features = ["surreal"]
+required-features = ["surreal", "migrate"]

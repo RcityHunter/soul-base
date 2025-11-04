@@ -11,6 +11,7 @@ pub struct AwarenessEvent {
     pub id: String,
     pub tenant: TenantId,
     pub journey_id: String,
+    pub awareness_id: String,
     pub kind: String,
     pub state: String,
     #[serde(default)]

@@ -106,3 +106,29 @@ async fn surreal_core_migration_applies() {
 
     datastore.shutdown().await.expect("shutdown");
 }
+
+#[tokio::test]
+async fn surreal_migration_is_idempotent() {
+    let datastore = SurrealDatastore::connect(SurrealConfig::default())
+        .await
+        .expect("connect surreal");
+    let migrator = datastore.migrator();
+    let scripts = schema_migrations();
+
+    migrator
+        .apply_up(&scripts)
+        .await
+        .expect("apply migrations first pass");
+    migrator
+        .apply_up(&scripts)
+        .await
+        .expect("apply migrations second pass");
+
+    let applied = migrator
+        .applied_versions()
+        .await
+        .expect("fetch applied versions");
+    assert_eq!(applied.len(), scripts.len());
+
+    datastore.shutdown().await.expect("shutdown");
+}

@@ -1,5 +1,10 @@
-target/
+﻿target/
 **/target/
 AGENTS.md
 .target
 var/
+.target-local
+target-check
+target-local
+tmp-target
+IntegrationTest.raw

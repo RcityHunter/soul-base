@@ -13,8 +13,19 @@ cargo check
 cargo test
 ```
 
+## SurrealDB Migrations
+The Surreal adapter ships with schema migrations covering timeline, causal, recall, awareness, vector, and LLM explain/tooling tables. Apply them before enabling the Surreal feature set:
+
+```bash
+cargo run -p soulbase-storage --bin soulbase-storage-migrate --features surreal,migrate -- \
+  --endpoint http://127.0.0.1:8000 \
+  --namespace soul \
+  --database default up
+```
+
+Use `--dry-run` to preview pending versions or `status` to inspect applied history. Credentials can be provided with `--username/--password` when targeting a secured instance.
+
 ## Next
-- Implement the `surreal/` adapter with SurrealDB v2.3.x
 - Add storage-specific error codes to `soulbase-errors`
 - Wire metrics to soulbase-observe & QoS modules
 - Expand filter DSL and cursor pagination support
