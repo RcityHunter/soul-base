@@ -1,0 +1,69 @@
+[server]
+address = "127.0.0.1"
+port = 8080
+
+[[services]]
+name = "tool.execute"
+route = "/api/tools/execute"
+kind = "tool_execute"
+description = "Tool execution entrypoint"
+[services.auth]
+api_key = "local-dev-key"
+[services.schema]
+required_headers = ["x-api-key"]
+required_fields = ["tenant", "tool_id"]
+
+[[services]]
+name = "collab.execute"
+route = "/api/collab/execute"
+kind = "unknown"
+description = "Collaboration execution entrypoint"
+[services.schema]
+required_fields = ["collab_id"]
+
+[[services]]
+name = "llm.complete"
+route = "/api/llm/complete"
+kind = "unknown"
+description = "Language model completion endpoint"
+[services.schema]
+required_fields = ["prompt"]
+
+[[services]]
+name = "tool.list"
+route = "/api/tools/list"
+kind = "tool_list"
+description = "List available tools"
+[services.auth]
+api_key = "local-dev-key"
+
+[tools]
+
+[tools.registry]
+kind = "in_memory"
+
+[[tools.manifests]]
+tenant = "tenant-demo"
+id = "demo.echo"
+version = "1.0.0"
+display_name = "Echo Tool"
+description = "Echoes the provided input payload"
+tags = ["demo"]
+input_schema = {}
+output_schema = {}
+scopes = []
+capabilities = []
+side_effect = "None"
+safety_class = "Low"
+[tools.manifests.consent]
+required = false
+[tools.manifests.limits]
+timeout_ms = 1000
+max_bytes_in = 4096
+max_bytes_out = 4096
+max_files = 0
+max_depth = 0
+max_concurrency = 1
+
+idempotency = "None"
+concurrency = "Parallel"

@@ -16,7 +16,7 @@ members = [
     "crates/soulbase-crypto",
     "crates/soulbase-net",
     "crates/soulbase-infra"
-]
+, "crates/soulbase-gateway"]
 resolver = "2"
 
 [workspace.package]
