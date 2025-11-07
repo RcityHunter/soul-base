@@ -16,18 +16,45 @@ required_fields = ["tenant", "tool_id"]
 [[services]]
 name = "collab.execute"
 route = "/api/collab/execute"
-kind = "unknown"
+kind = "collab_execute"
 description = "Collaboration execution entrypoint"
+[services.schema]
+required_fields = ["collab_id"]
+
+[[services]]
+name = "collab.resolve"
+route = "/api/collab/resolve"
+kind = "collab_resolve"
+description = "Collaboration resolution entrypoint"
 [services.schema]
 required_fields = ["collab_id"]
 
 [[services]]
 name = "llm.complete"
 route = "/api/llm/complete"
-kind = "unknown"
+kind = "llm_complete"
 description = "Language model completion endpoint"
 [services.schema]
+required_headers = ["x-api-key"]
 required_fields = ["prompt"]
+
+[[services]]
+name = "llm.stream"
+route = "/api/llm/stream"
+kind = "llm_stream"
+description = "Language model streaming endpoint"
+[services.schema]
+required_headers = ["x-api-key"]
+required_fields = ["prompt"]
+
+[[services]]
+name = "llm.embed"
+route = "/api/llm/embed"
+kind = "llm_embed"
+description = "Embedding endpoint"
+[services.schema]
+required_headers = ["x-api-key"]
+required_fields = ["text"]
 
 [[services]]
 name = "tool.list"
@@ -37,10 +64,33 @@ description = "List available tools"
 [services.auth]
 api_key = "local-dev-key"
 
+[[services]]
+name = "tool.preflight"
+route = "/api/tools/preflight"
+kind = "tool_preflight"
+description = "Tool invocation preflight"
+[services.auth]
+api_key = "local-dev-key"
+[services.schema]
+required_headers = ["x-api-key"]
+required_fields = ["tenant", "tool_id"]
+
 [tools]
 
 [tools.registry]
 kind = "in_memory"
+
+[tools.idempotency]
+enabled = true
+ttl_ms = 300000
+failure_ttl_ms = 60000
+[tools.idempotency.store]
+kind = "memory"
+
+[tools.evidence]
+enabled = true
+[tools.evidence.store]
+kind = "memory"
 
 [[tools.manifests]]
 tenant = "tenant-demo"
@@ -52,7 +102,11 @@ tags = ["demo"]
 input_schema = {}
 output_schema = {}
 scopes = []
-capabilities = []
+[[tools.manifests.capabilities]]
+domain = "tmp"
+action = "use"
+resource = "/tmp"
+attrs = {}
 side_effect = "None"
 safety_class = "Low"
 [tools.manifests.consent]
@@ -67,3 +121,11 @@ max_concurrency = 1
 
 idempotency = "None"
 concurrency = "Parallel"
+
+[llm]
+default_complete_model = "local:echo"
+default_stream_model = "local:echo"
+default_embed_model = "local:emb"
+
+[[llm.providers]]
+kind = "local"

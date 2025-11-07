@@ -7,6 +7,8 @@ license.workspace = true
 [features]
 default = []
 registry_surreal = ["soulbase-tools/registry_surreal", "dep:soulbase-storage"]
+idempo_surreal = ["soulbase-tx/surreal", "dep:soulbase-storage"]
+provider-openai = ["soulbase-llm/provider-openai"]
 
 [dependencies]
 anyhow = "1"
@@ -25,3 +27,8 @@ soulbase-types = { path = "../soulbase-types", version = "1.0.0" }
 async-trait = "0.1"
 soulbase-tools = { path = "../soulbase-tools", version = "1.0.0" }
 soulbase-storage = { path = "../soulbase-storage", version = "1.0.0", optional = true, features = ["surreal"] }
+soulbase-sandbox = { path = "../soulbase-sandbox", version = "1.0.0" }
+soulbase-tx = { path = "../soulbase-tx", version = "1.0.0" }
+sha2 = "0.10"
+soulbase-llm = { path = "../soulbase-llm", version = "1.0.0" }
+futures-util = "0.3"

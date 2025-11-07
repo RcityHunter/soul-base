@@ -24,7 +24,7 @@ pub struct ToolInvokeBegin {
 pub struct ToolInvokeEnd {
     pub envelope_id: Id,
     pub status: String,
-    pub error_code: Option<&'static str>,
+    pub error_code: Option<String>,
     pub budget_used_bytes_in: u64,
     pub budget_used_bytes_out: u64,
     pub output_digest: String,

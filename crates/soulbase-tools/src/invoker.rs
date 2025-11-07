@@ -8,6 +8,7 @@ use async_trait::async_trait;
 use parking_lot::Mutex;
 use serde_json::json;
 use soulbase_auth::{prelude::Obligation, AuthFacade};
+use soulbase_sandbox::evidence::EvidenceRecord;
 use soulbase_sandbox::prelude::{
     ExecOp, MemoryBudget, MemoryEvidence, PolicyConfig, PolicyGuard, PolicyGuardDefault,
     ProfileBuilder, ProfileBuilderDefault, Sandbox,
@@ -50,16 +51,29 @@ pub struct InvokeRequest {
 #[derive(Clone, Debug)]
 pub struct InvokeResult {
     pub status: InvokeStatus,
-    pub error_code: Option<&'static str>,
+    pub error_code: Option<String>,
     pub output: Option<serde_json::Value>,
     pub evidence_ref: Option<Id>,
     pub degradation: Option<Vec<String>>,
+    pub evidence: InvokeEvidence,
 }
 
 #[async_trait]
 pub trait Invoker: Send + Sync {
     async fn preflight(&self, call: &ToolCall) -> Result<PreflightOutput, ToolError>;
     async fn invoke(&self, request: InvokeRequest) -> Result<InvokeResult, ToolError>;
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct InvokeEvidence {
+    pub begins: Vec<EvidenceRecord>,
+    pub ends: Vec<EvidenceRecord>,
+}
+
+impl InvokeEvidence {
+    pub fn empty() -> Self {
+        Self::default()
+    }
 }
 
 pub struct InvokerImpl {
@@ -171,6 +185,7 @@ impl Invoker for InvokerImpl {
                     output: Some(hit),
                     evidence_ref: None,
                     degradation: None,
+                    evidence: InvokeEvidence::empty(),
                 });
             }
         }
@@ -340,6 +355,11 @@ impl Invoker for InvokerImpl {
             outbox.enqueue(msg).await?;
         }
 
+        let evidence_snapshot = InvokeEvidence {
+            begins: evidence.begins.lock().clone(),
+            ends: evidence.ends.lock().clone(),
+        };
+
         Ok(InvokeResult {
             status: InvokeStatus::Ok,
             error_code: None,
@@ -350,6 +370,7 @@ impl Invoker for InvokerImpl {
             } else {
                 Some(degrade_reasons)
             },
+            evidence: evidence_snapshot,
         })
     }
 }
