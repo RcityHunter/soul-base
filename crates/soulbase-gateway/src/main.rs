@@ -1,13 +1,16 @@
 use std::{
     collections::{hash_map::Entry, HashMap},
-    env,
+    env, fs,
     net::SocketAddr,
     path::Path,
-    sync::Arc,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
     time::{Duration, Instant},
 };
 
-use anyhow::Context;
+use anyhow::{anyhow, Context};
 use async_trait::async_trait;
 use axum::body::Body;
 use axum::{
@@ -20,10 +23,18 @@ use axum::{
 };
 use config::Config;
 use futures_util::StreamExt;
+use hex::{decode as hex_decode, encode as hex_encode};
+use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use soulbase_auth::{prelude::Obligation, AuthFacade};
+use soulbase_auth::{
+    pdp::Authorizer,
+    prelude::{
+        Action, AuthnInput, AuthzRequest, Obligation, PolicyAuthorizer, PolicyRule, ResourceUrn,
+    },
+    AuthFacade,
+};
 use soulbase_errors::prelude::codes;
 use soulbase_interceptors::{
     adapters::http::handle_with_chain,
@@ -45,8 +56,11 @@ use soulbase_sandbox::{
     evidence::EvidenceRecord,
     prelude::{ExecOp, PolicyConfig, Sandbox},
 };
+use soulbase_storage::mock::{InMemoryRepository, MockDatastore};
+use soulbase_storage::model::{Entity, QueryParams};
 #[cfg(any(feature = "registry_surreal", feature = "idempo_surreal"))]
 use soulbase_storage::surreal::{SurrealConfig, SurrealDatastore};
+use soulbase_storage::{errors::StorageError, spi::repo::Repository};
 #[cfg(feature = "registry_surreal")]
 use soulbase_tools::prelude::SurrealToolRegistry;
 use soulbase_tools::{
@@ -77,6 +91,54 @@ use tracing::{info, warn};
 type SharedSurreal = Option<Arc<SurrealDatastore>>;
 #[cfg(not(any(feature = "registry_surreal", feature = "idempo_surreal")))]
 type SharedSurreal = Option<Arc<()>>;
+
+type HmacSha256 = Hmac<Sha256>;
+
+struct GatewayStorage {
+    repo_store: Arc<dyn Repository<RepoRecordEntity>>,
+    observe_store: Arc<dyn Repository<ObserveEventEntity>>,
+    graph_store: Arc<dyn Repository<GraphEdgeEntity>>,
+}
+
+impl GatewayStorage {
+    async fn from_bootstrap(config: &StorageBootstrap) -> anyhow::Result<Self> {
+        match &config.repo {
+            StorageBackendConfig::Memory => {}
+        }
+        match &config.observe {
+            StorageBackendConfig::Memory => {}
+        }
+        match &config.graph {
+            StorageBackendConfig::Memory => {}
+        }
+
+        let datastore = MockDatastore::new();
+        let repo_store: Arc<dyn Repository<RepoRecordEntity>> =
+            Arc::new(InMemoryRepository::<RepoRecordEntity>::new(&datastore));
+        let observe_store: Arc<dyn Repository<ObserveEventEntity>> =
+            Arc::new(InMemoryRepository::<ObserveEventEntity>::new(&datastore));
+        let graph_store: Arc<dyn Repository<GraphEdgeEntity>> =
+            Arc::new(InMemoryRepository::<GraphEdgeEntity>::new(&datastore));
+
+        Ok(Self {
+            repo_store,
+            observe_store,
+            graph_store,
+        })
+    }
+
+    fn repo_store(&self) -> Arc<dyn Repository<RepoRecordEntity>> {
+        self.repo_store.clone()
+    }
+
+    fn observe_store(&self) -> Arc<dyn Repository<ObserveEventEntity>> {
+        self.observe_store.clone()
+    }
+
+    fn graph_store(&self) -> Arc<dyn Repository<GraphEdgeEntity>> {
+        self.graph_store.clone()
+    }
+}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -138,6 +200,12 @@ struct GatewayConfig {
     tools: ToolBootstrap,
     #[serde(default)]
     llm: LlmBootstrap,
+    #[serde(default)]
+    auth: AuthBootstrap,
+    #[serde(default)]
+    storage: StorageBootstrap,
+    #[serde(default)]
+    policy: PolicyBootstrap,
 }
 
 impl GatewayConfig {
@@ -163,6 +231,33 @@ impl GatewayConfig {
 
         Ok(config)
     }
+}
+
+fn resolve_secret_source(
+    literal: &Option<String>,
+    env_key: &Option<String>,
+    file_path: &Option<String>,
+    field: &str,
+) -> anyhow::Result<String> {
+    if let Some(env_var) = env_key.as_ref() {
+        let value = env::var(env_var)
+            .with_context(|| format!("environment variable {env_var} for {field} not set"))?;
+        return Ok(value);
+    }
+    if let Some(path) = file_path.as_ref() {
+        let contents = fs::read_to_string(path)
+            .with_context(|| format!("read secret file {path} for {field}"))?;
+        return Ok(contents.trim().to_string());
+    }
+    if let Some(value) = literal.as_ref() {
+        if value.is_empty() {
+            return Err(anyhow!("{field} literal secret cannot be empty"));
+        }
+        return Ok(value.clone());
+    }
+    Err(anyhow!(
+        "{field} secret must be provided via literal/env/file"
+    ))
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -196,6 +291,14 @@ impl Default for ServerConfig {
 struct AuthConfig {
     #[serde(default)]
     api_key: Option<String>,
+    #[serde(default)]
+    scopes: Vec<String>,
+    #[serde(default = "default_allow_anonymous")]
+    allow_anonymous: bool,
+}
+
+fn default_allow_anonymous() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
@@ -217,6 +320,10 @@ enum ServiceKind {
     LlmComplete,
     LlmStream,
     LlmEmbed,
+    GraphRecall,
+    ObserveEmit,
+    RepoAppend,
+    ConfigTools,
     Other,
 }
 
@@ -240,12 +347,53 @@ struct ServiceConfig {
     schema: Option<SchemaConfig>,
     #[serde(default)]
     kind: ServiceKind,
+    #[serde(default)]
+    policy: Option<ServicePolicyConfig>,
 }
 
 impl ServiceConfig {
     fn default_enabled() -> bool {
         true
     }
+
+    fn policy_resource(&self) -> String {
+        self.policy
+            .as_ref()
+            .and_then(|p| p.resource.clone())
+            .unwrap_or_else(|| format!("route:{}", self.route))
+    }
+
+    fn policy_action(&self) -> Action {
+        self.policy
+            .as_ref()
+            .and_then(|p| p.action.clone())
+            .unwrap_or_else(|| match self.kind {
+                ServiceKind::ToolExecute | ServiceKind::RepoAppend => Action::Write,
+                ServiceKind::CollabExecute | ServiceKind::CollabResolve => Action::Invoke,
+                ServiceKind::ToolPreflight | ServiceKind::ToolList => Action::List,
+                ServiceKind::LlmComplete | ServiceKind::LlmStream | ServiceKind::LlmEmbed => {
+                    Action::Invoke
+                }
+                ServiceKind::GraphRecall => Action::Read,
+                ServiceKind::ObserveEmit => Action::Write,
+                ServiceKind::ConfigTools => Action::Configure,
+                _ => Action::Read,
+            })
+    }
+
+    fn policy_attrs(&self) -> Option<Value> {
+        self.policy.as_ref().and_then(|p| p.attrs.clone())
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct ServicePolicyConfig {
+    #[serde(default)]
+    resource: Option<String>,
+    #[serde(default)]
+    action: Option<Action>,
+    #[serde(default)]
+    attrs: Option<Value>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -328,6 +476,154 @@ impl Default for ToolBootstrap {
             events: EventsBootstrap::default(),
             evidence: EvidenceBootstrap::default(),
             manifests: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+struct AuthBootstrap {
+    #[serde(default)]
+    tokens: Vec<ApiTokenConfig>,
+    #[serde(default)]
+    hmac_keys: Vec<HmacKeyConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+struct StorageBootstrap {
+    #[serde(default)]
+    repo: StorageBackendConfig,
+    #[serde(default)]
+    observe: StorageBackendConfig,
+    #[serde(default)]
+    graph: StorageBackendConfig,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum StorageBackendConfig {
+    Memory,
+}
+
+impl Default for StorageBackendConfig {
+    fn default() -> Self {
+        StorageBackendConfig::Memory
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+struct PolicyBootstrap {
+    #[serde(default)]
+    rules: Vec<PolicyRule>,
+}
+
+impl PolicyBootstrap {
+    fn authorizer(&self) -> Option<PolicyAuthorizer> {
+        if self.rules.is_empty() {
+            None
+        } else {
+            Some(PolicyAuthorizer::new(self.rules.clone()))
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct ApiTokenConfig {
+    name: String,
+    #[serde(default)]
+    token: Option<String>,
+    #[serde(default)]
+    token_env: Option<String>,
+    #[serde(default)]
+    token_file: Option<String>,
+    tenant: String,
+    #[serde(default)]
+    subject: Option<AuthSubjectConfig>,
+    #[serde(default)]
+    scopes: Vec<String>,
+}
+
+impl ApiTokenConfig {
+    fn resolve(&self) -> anyhow::Result<(String, ResolvedPrincipal)> {
+        let token = resolve_secret_source(
+            &self.token,
+            &self.token_env,
+            &self.token_file,
+            &format!("auth.tokens[{}].token", self.name),
+        )?;
+        let tenant = TenantId(self.tenant.clone());
+        let subject_cfg = self.subject.clone().unwrap_or(AuthSubjectConfig {
+            kind: SubjectKind::Service,
+            subject_id: self.name.clone(),
+            claims: serde_json::Map::new(),
+        });
+        Ok((
+            token,
+            ResolvedPrincipal {
+                tenant: tenant.clone(),
+                subject: subject_cfg.into_subject(tenant),
+                scopes: self.scopes.clone(),
+            },
+        ))
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct HmacKeyConfig {
+    key_id: String,
+    #[serde(default)]
+    secret: Option<String>,
+    #[serde(default)]
+    secret_env: Option<String>,
+    #[serde(default)]
+    secret_file: Option<String>,
+    tenant: String,
+    #[serde(default)]
+    subject: Option<AuthSubjectConfig>,
+    #[serde(default)]
+    scopes: Vec<String>,
+}
+
+impl HmacKeyConfig {
+    fn resolve(&self) -> anyhow::Result<ResolvedHmacKey> {
+        let secret = resolve_secret_source(
+            &self.secret,
+            &self.secret_env,
+            &self.secret_file,
+            &format!("auth.hmac_keys[{}].secret", self.key_id),
+        )?;
+        let tenant = TenantId(self.tenant.clone());
+        let subject_cfg = self.subject.clone().unwrap_or(AuthSubjectConfig {
+            kind: SubjectKind::Service,
+            subject_id: self.key_id.clone(),
+            claims: serde_json::Map::new(),
+        });
+        Ok(ResolvedHmacKey {
+            secret: secret.into_bytes(),
+            principal: ResolvedPrincipal {
+                tenant: tenant.clone(),
+                subject: subject_cfg.into_subject(tenant),
+                scopes: self.scopes.clone(),
+            },
+        })
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct AuthSubjectConfig {
+    #[serde(default = "default_subject_kind")]
+    kind: SubjectKind,
+    subject_id: String,
+    #[serde(default = "default_claims")]
+    claims: serde_json::Map<String, Value>,
+}
+
+impl AuthSubjectConfig {
+    fn into_subject(self, tenant: TenantId) -> Subject {
+        Subject {
+            kind: self.kind,
+            subject_id: Id(self.subject_id),
+            tenant,
+            claims: self.claims,
         }
     }
 }
@@ -651,6 +947,10 @@ struct AppState {
     tool_service: Arc<ToolService>,
     collab_service: Arc<CollabService>,
     llm_service: Arc<LlmService>,
+    graph_service: Arc<GraphService>,
+    observe_service: Arc<ObserveService>,
+    repo_service: Arc<RepoService>,
+    tool_registry: Arc<ToolConfigRegistry>,
 }
 
 impl AppState {
@@ -665,21 +965,37 @@ impl AppState {
         );
 
         let default_api_key = env::var("GATEWAY_API_KEY").ok().filter(|v| !v.is_empty());
-        let auth_stage = GatewayAuthStage::new(service_index.clone(), default_api_key);
+        let auth_stage =
+            GatewayAuthStage::new(service_index.clone(), default_api_key, &config.auth)?;
         let schema_stage = GatewaySchemaStage::new(service_index.clone());
+
+        let policy_stage = GatewayPolicyStage::new(
+            service_index.clone(),
+            config.policy.authorizer().map(Arc::new),
+        );
 
         let stages: Vec<Box<dyn Stage>> = vec![
             Box::new(ContextInitStage),
             Box::new(auth_stage),
             Box::new(schema_stage),
+            Box::new(policy_stage),
             Box::new(ErrorNormStage),
             Box::new(ResponseStampStage),
         ];
         let chain = Arc::new(InterceptorChain::new(stages));
 
+        let storage = Arc::new(GatewayStorage::from_bootstrap(&config.storage).await?);
+
         let tool_service = Arc::new(ToolService::from_bootstrap(&config.tools).await?);
+        let tool_registry = Arc::new(ToolConfigRegistry::new(config.tools.manifests.clone()));
         let collab_service = Arc::new(CollabService::default());
         let llm_service = Arc::new(LlmService::from_bootstrap(&config.llm).await?);
+        let graph_service = Arc::new(GraphService::new(storage.graph_store()));
+        let observe_service = Arc::new(ObserveService::new(storage.observe_store()));
+        let repo_service = Arc::new(RepoService::new(
+            graph_service.clone(),
+            storage.repo_store(),
+        ));
 
         Ok(Self {
             config: Arc::new(config),
@@ -690,6 +1006,10 @@ impl AppState {
             tool_service,
             collab_service,
             llm_service,
+            graph_service,
+            observe_service,
+            repo_service,
+            tool_registry,
         })
     }
 
@@ -980,6 +1300,115 @@ async fn dynamic_dispatch(State(state): State<AppState>, req: Request<Body>) -> 
                 })
                 .await;
             }
+            ServiceKind::GraphRecall => {
+                let graph_service = state.graph_service.clone();
+                return handle_with_chain(req, &chain, move |cx, preq| {
+                    let graph_service = graph_service.clone();
+                    Box::pin(async move {
+                        let body = preq.read_json().await?;
+                        let payload: GraphRecallPayload =
+                            serde_json::from_value(body).map_err(|e| {
+                                InterceptError::schema(&format!("invalid request body: {e}"))
+                            })?;
+                        let tenant = payload
+                            .tenant
+                            .clone()
+                            .or_else(|| cx.tenant_header.clone())
+                            .ok_or_else(|| InterceptError::schema("tenant missing"))?;
+                        let tenant_id = TenantId(tenant);
+                        let response = graph_service
+                            .recall(&tenant_id, payload.node_id, payload.label, payload.limit)
+                            .await;
+                        Ok(response.into_json())
+                    })
+                })
+                .await;
+            }
+            ServiceKind::ObserveEmit => {
+                let observe_service = state.observe_service.clone();
+                return handle_with_chain(req, &chain, move |cx, preq| {
+                    let observe_service = observe_service.clone();
+                    Box::pin(async move {
+                        let body = preq.read_json().await?;
+                        let payload: ObserveEmitPayload =
+                            serde_json::from_value(body).map_err(|e| {
+                                InterceptError::schema(&format!("invalid request body: {e}"))
+                            })?;
+                        let tenant = payload
+                            .tenant
+                            .clone()
+                            .or_else(|| cx.tenant_header.clone())
+                            .ok_or_else(|| InterceptError::schema("tenant missing"))?;
+                        let tenant_id = TenantId(tenant);
+                        let response = observe_service
+                            .emit(&tenant_id, payload)
+                            .await
+                            .map_err(observe_error_to_intercept)?;
+                        Ok(response.into_json())
+                    })
+                })
+                .await;
+            }
+            ServiceKind::RepoAppend => {
+                let repo_service = state.repo_service.clone();
+                return handle_with_chain(req, &chain, move |cx, preq| {
+                    let repo_service = repo_service.clone();
+                    Box::pin(async move {
+                        let body = preq.read_json().await?;
+                        let payload: RepoAppendPayload =
+                            serde_json::from_value(body).map_err(|e| {
+                                InterceptError::schema(&format!("invalid request body: {e}"))
+                            })?;
+                        let tenant = payload
+                            .tenant
+                            .clone()
+                            .or_else(|| cx.tenant_header.clone())
+                            .ok_or_else(|| InterceptError::schema("tenant missing"))?;
+                        let tenant_id = TenantId(tenant);
+                        let response = repo_service
+                            .append(&tenant_id, payload)
+                            .await
+                            .map_err(repo_error_to_intercept)?;
+                        Ok(response.into_json())
+                    })
+                })
+                .await;
+            }
+            ServiceKind::ConfigTools => {
+                #[allow(unused_mut)]
+                let registry = state.tool_registry.clone();
+                let tool_service = state.tool_service.clone();
+                return handle_with_chain(req, &chain, move |_cx, preq| {
+                    let registry = registry.clone();
+                    let tool_service = tool_service.clone();
+                    Box::pin(async move {
+                        match preq.method().to_ascii_uppercase().as_str() {
+                            "GET" => {
+                                let snapshots = registry.list().await;
+                                Ok(json!({ "versions": snapshots }))
+                            }
+                            "POST" => {
+                                let body = preq.read_json().await?;
+                                let payload: ToolConfigPublishPayload =
+                                    serde_json::from_value(body).map_err(|err| {
+                                        InterceptError::schema(&format!(
+                                            "invalid publish payload: {err}"
+                                        ))
+                                    })?;
+                                let snapshot = registry
+                                    .publish(payload, tool_service.clone())
+                                    .await
+                                    .map_err(config_error_to_intercept)?;
+                                Ok(json!({ "published": snapshot }))
+                            }
+                            other => Err(InterceptError::schema(&format!(
+                                "unsupported method {other}"
+                            ))),
+                        }
+                    })
+                })
+                .await;
+            }
             ServiceKind::ToolPreflight => {
                 let tool_service = state.tool_service.clone();
                 return handle_with_chain(req, &chain, move |cx, preq| {
@@ -1149,14 +1578,62 @@ struct RouteMetrics {
 struct GatewayAuthStage {
     routes: Arc<HashMap<String, ServiceConfig>>,
     default_api_key: Option<String>,
+    tokens: Arc<HashMap<String, ResolvedPrincipal>>,
+    hmac_keys: Arc<HashMap<String, ResolvedHmacKey>>,
 }
 
 impl GatewayAuthStage {
-    fn new(routes: Arc<HashMap<String, ServiceConfig>>, default_api_key: Option<String>) -> Self {
-        Self {
+    fn new(
+        routes: Arc<HashMap<String, ServiceConfig>>,
+        default_api_key: Option<String>,
+        auth: &AuthBootstrap,
+    ) -> anyhow::Result<Self> {
+        let mut token_map = HashMap::new();
+        for cfg in &auth.tokens {
+            let (token, principal) = cfg.resolve()?;
+            token_map.insert(token, principal);
+        }
+        let mut hmac_map = HashMap::new();
+        for cfg in &auth.hmac_keys {
+            hmac_map.insert(cfg.key_id.clone(), cfg.resolve()?);
+        }
+        Ok(Self {
             routes,
             default_api_key,
-        }
+            tokens: Arc::new(token_map),
+            hmac_keys: Arc::new(hmac_map),
+        })
+    }
+
+    fn verify_hmac(
+        &self,
+        spec: &str,
+        req: &mut dyn ProtoRequest,
+    ) -> Result<(ResolvedPrincipal, String), InterceptError> {
+        let (key_id, signature_hex) = spec
+            .split_once(':')
+            .ok_or_else(|| unauthenticated("invalid hmac authorization format"))?;
+        let key = self
+            .hmac_keys
+            .get(key_id)
+            .ok_or_else(|| unauthenticated("unknown hmac key"))?;
+        let signature = hex_decode(signature_hex)
+            .map_err(|_| unauthenticated("invalid hmac signature encoding"))?;
+        let date = req
+            .header("x-sb-date")
+            .ok_or_else(|| unauthenticated("missing x-sb-date header"))?;
+        let canonical = format!(
+            "{}\n{}\n{}",
+            req.method().to_ascii_uppercase(),
+            req.path(),
+            date
+        );
+        let mut mac = HmacSha256::new_from_slice(&key.secret)
+            .map_err(|_| unauthenticated("invalid hmac key"))?;
+        mac.update(canonical.as_bytes());
+        mac.verify_slice(&signature)
+            .map_err(|_| unauthenticated("invalid hmac signature"))?;
+        Ok((key.principal.clone(), key_id.to_string()))
     }
 }
 
@@ -1164,30 +1641,112 @@ impl GatewayAuthStage {
 impl Stage for GatewayAuthStage {
     async fn handle(
         &self,
-        _cx: &mut InterceptContext,
+        cx: &mut InterceptContext,
         req: &mut dyn ProtoRequest,
         _rsp: &mut dyn ProtoResponse,
     ) -> Result<StageOutcome, InterceptError> {
-        if let Some(service) = self.routes.get(req.path()) {
-            let expected = service
-                .auth
-                .as_ref()
-                .and_then(|a| a.api_key.clone())
+        let Some(service) = self.routes.get(req.path()) else {
+            return Ok(StageOutcome::Continue);
+        };
+        let auth_cfg = service.auth.as_ref();
+
+        let mut principal: Option<ResolvedPrincipal> = None;
+        let mut captured_authn: Option<AuthnInput> = None;
+        if let Some(header) = req.header("authorization") {
+            if let Some(token) = header.strip_prefix("Bearer ") {
+                let resolved = self
+                    .tokens
+                    .get(token)
+                    .ok_or_else(|| unauthenticated("invalid bearer token"))?;
+                principal = Some(resolved.clone());
+                captured_authn = Some(AuthnInput::BearerJwt(token.to_string()));
+            } else if let Some(spec) = header.strip_prefix("SB-HMAC ") {
+                let (resolved, key_id) = self.verify_hmac(spec, req)?;
+                captured_authn = Some(AuthnInput::ServiceToken(format!("hmac:{key_id}")));
+                principal = Some(resolved);
+            }
+        }
+
+        let mut used_api_key = false;
+        if principal.is_none() {
+            let expected_key = auth_cfg
+                .and_then(|cfg| cfg.api_key.clone())
                 .or_else(|| self.default_api_key.clone());
-            if let Some(api_key) = expected {
+            if let Some(api_key) = expected_key {
+                used_api_key = true;
                 match req.header("x-api-key") {
-                    Some(ref provided) if provided == &api_key => {}
-                    _ => {
-                        return Err(InterceptError::from_public(
-                            codes::AUTH_UNAUTHENTICATED,
-                            "API key required",
-                        ))
+                    Some(ref provided) if provided == &api_key => {
+                        captured_authn = Some(AuthnInput::ApiKey(api_key));
                     }
+                    _ => return Err(unauthenticated("API key required")),
                 }
+            }
+        }
+
+        if let Some(cfg) = auth_cfg {
+            if !cfg.scopes.is_empty() {
+                let Some(principal_ref) = principal.as_ref() else {
+                    return Err(unauthenticated(
+                        "scoped route requires authenticated principal",
+                    ));
+                };
+                cfg.ensure_scopes(principal_ref)?;
+            }
+
+            if !cfg.allow_anonymous && principal.is_none() && !used_api_key {
+                return Err(unauthenticated("authentication required"));
+            }
+        }
+
+        if let Some(principal) = principal {
+            cx.subject = Some(principal.subject.clone());
+            if cx.tenant_header.is_none() {
+                cx.tenant_header = Some(principal.tenant.0.clone());
+            }
+            if let Some(authn) = captured_authn {
+                cx.authn_input = Some(authn);
             }
         }
         Ok(StageOutcome::Continue)
     }
+}
+
+#[derive(Clone)]
+struct ResolvedPrincipal {
+    tenant: TenantId,
+    subject: Subject,
+    scopes: Vec<String>,
+}
+
+impl ResolvedPrincipal {
+    fn has_scope(&self, scope: &str) -> bool {
+        self.scopes.iter().any(|s| s == scope || s == "*")
+    }
+}
+
+#[derive(Clone)]
+struct ResolvedHmacKey {
+    secret: Vec<u8>,
+    principal: ResolvedPrincipal,
+}
+
+impl AuthConfig {
+    fn ensure_scopes(&self, principal: &ResolvedPrincipal) -> Result<(), InterceptError> {
+        for scope in &self.scopes {
+            if !principal.has_scope(scope) {
+                return Err(forbidden("insufficient scope"));
+            }
+        }
+        Ok(())
+    }
+}
+
+fn unauthenticated(msg: &str) -> InterceptError {
+    InterceptError::from_public(codes::AUTH_UNAUTHENTICATED, msg)
+}
+
+fn forbidden(msg: &str) -> InterceptError {
+    InterceptError::from_public(codes::AUTH_FORBIDDEN, msg)
 }
 
 struct GatewaySchemaStage {
@@ -1235,6 +1794,88 @@ impl Stage for GatewaySchemaStage {
         }
 
         Ok(StageOutcome::Continue)
+    }
+}
+
+struct GatewayPolicyStage {
+    routes: Arc<HashMap<String, ServiceConfig>>,
+    authorizer: Option<Arc<PolicyAuthorizer>>,
+}
+
+impl GatewayPolicyStage {
+    fn new(
+        routes: Arc<HashMap<String, ServiceConfig>>,
+        authorizer: Option<Arc<PolicyAuthorizer>>,
+    ) -> Self {
+        Self { routes, authorizer }
+    }
+
+    fn default_attrs(
+        &self,
+        service: &ServiceConfig,
+        cx: &InterceptContext,
+        req: &dyn ProtoRequest,
+    ) -> Value {
+        let mut map = serde_json::Map::new();
+        map.insert("service".into(), Value::String(service.name.clone()));
+        map.insert("route".into(), Value::String(service.route.clone()));
+        map.insert("method".into(), Value::String(req.method().to_string()));
+        if let Some(tenant) = cx.tenant_header.as_ref() {
+            map.insert("tenant".into(), Value::String(tenant.clone()));
+        }
+        if let Some(Value::Object(extra)) = service.policy_attrs() {
+            for (k, v) in extra {
+                map.insert(k, v);
+            }
+        }
+        Value::Object(map)
+    }
+}
+
+#[async_trait]
+impl Stage for GatewayPolicyStage {
+    async fn handle(
+        &self,
+        cx: &mut InterceptContext,
+        req: &mut dyn ProtoRequest,
+        _rsp: &mut dyn ProtoResponse,
+    ) -> Result<StageOutcome, InterceptError> {
+        let Some(authorizer) = &self.authorizer else {
+            return Ok(StageOutcome::Continue);
+        };
+        let Some(service) = self.routes.get(req.path()) else {
+            return Ok(StageOutcome::Continue);
+        };
+        let Some(subject) = cx.subject.clone() else {
+            return Ok(StageOutcome::Continue);
+        };
+
+        let resource = ResourceUrn(service.policy_resource());
+        let action = service.policy_action();
+        let attrs = self.default_attrs(service, cx, req);
+        let decision = authorizer
+            .decide(
+                &AuthzRequest {
+                    subject: subject.clone(),
+                    resource,
+                    action: action.clone(),
+                    attrs: attrs.clone(),
+                    consent: None,
+                    correlation_id: None,
+                },
+                &attrs,
+            )
+            .await
+            .map_err(|err| InterceptError::internal(&format!("policy evaluate: {err}")))?;
+
+        if decision.allow {
+            cx.obligations.extend(decision.obligations);
+            Ok(StageOutcome::Continue)
+        } else {
+            Err(InterceptError::deny_policy(
+                decision.reason.as_deref().unwrap_or("policy-denied"),
+            ))
+        }
     }
 }
 
@@ -1410,7 +2051,7 @@ impl ToolService {
         Ok(store)
     }
 
-    async fn apply_manifests(&self, manifests: &[ToolManifestEntry]) -> anyhow::Result<()> {
+    pub async fn apply_manifests(&self, manifests: &[ToolManifestEntry]) -> anyhow::Result<()> {
         for entry in manifests {
             let tenant = TenantId(entry.tenant.clone());
             self.registry
@@ -1723,6 +2364,70 @@ impl ToolService {
     }
 }
 
+#[derive(Clone, Debug, Serialize)]
+struct ToolConfigSnapshot {
+    version: String,
+    manifests: Vec<ToolManifestEntry>,
+    created_at_ms: i64,
+}
+
+#[derive(Default)]
+struct ToolConfigRegistry {
+    snapshots: AsyncMutex<Vec<ToolConfigSnapshot>>,
+}
+
+impl ToolConfigRegistry {
+    fn new(initial: Vec<ToolManifestEntry>) -> Self {
+        Self {
+            snapshots: AsyncMutex::new(vec![ToolConfigSnapshot {
+                version: "bootstrap".into(),
+                manifests: initial,
+                created_at_ms: now_ms(),
+            }]),
+        }
+    }
+
+    async fn list(&self) -> Vec<ToolConfigSnapshot> {
+        self.snapshots.lock().await.clone()
+    }
+
+    async fn publish(
+        &self,
+        payload: ToolConfigPublishPayload,
+        tool_service: Arc<ToolService>,
+    ) -> Result<ToolConfigSnapshot, ConfigRegistryError> {
+        if payload.version.trim().is_empty() {
+            return Err(ConfigRegistryError::Schema("version required".into()));
+        }
+        if payload.manifests.is_empty() {
+            return Err(ConfigRegistryError::Schema(
+                "manifests cannot be empty".into(),
+            ));
+        }
+        {
+            let history = self.snapshots.lock().await;
+            if history.iter().any(|snap| snap.version == payload.version) {
+                return Err(ConfigRegistryError::Conflict(
+                    "version already exists".into(),
+                ));
+            }
+        }
+        tool_service
+            .apply_manifests(&payload.manifests)
+            .await
+            .map_err(|err| ConfigRegistryError::Apply(err.to_string()))?;
+
+        let snapshot = ToolConfigSnapshot {
+            version: payload.version,
+            manifests: payload.manifests,
+            created_at_ms: now_ms(),
+        };
+        let mut guard = self.snapshots.lock().await;
+        guard.push(snapshot.clone());
+        Ok(snapshot)
+    }
+}
+
 #[cfg(test)]
 impl ToolService {
     async fn event_records(&self) -> Vec<ToolEventRecord> {
@@ -1976,6 +2681,306 @@ fn collab_error_to_intercept(err: CollabError) -> InterceptError {
     match err {
         CollabError::Conflict(msg) => InterceptError::from_public(codes::STORAGE_CONFLICT, &msg),
         CollabError::NotFound(msg) => InterceptError::from_public(codes::STORAGE_NOT_FOUND, &msg),
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct GraphEdgeRecord {
+    from: String,
+    to: String,
+    label: String,
+    props: Value,
+    timestamp_ms: i64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct GraphEdgeEntity {
+    id: String,
+    tenant: TenantId,
+    from: String,
+    to: String,
+    label: String,
+    props: Value,
+    timestamp_ms: i64,
+}
+
+impl Entity for GraphEdgeEntity {
+    const TABLE: &'static str = "gateway_graph_edges";
+
+    fn id(&self) -> &str {
+        &self.id
+    }
+
+    fn tenant(&self) -> &TenantId {
+        &self.tenant
+    }
+}
+
+impl From<GraphEdgeEntity> for GraphEdgeRecord {
+    fn from(value: GraphEdgeEntity) -> Self {
+        Self {
+            from: value.from,
+            to: value.to,
+            label: value.label,
+            props: value.props,
+            timestamp_ms: value.timestamp_ms,
+        }
+    }
+}
+
+struct GraphService {
+    store: Arc<dyn Repository<GraphEdgeEntity>>,
+}
+
+impl GraphService {
+    fn new(store: Arc<dyn Repository<GraphEdgeEntity>>) -> Self {
+        Self { store }
+    }
+
+    async fn record_edges(&self, tenant: &TenantId, default_from: &str, edges: &[GraphEdgeInput]) {
+        for edge in edges {
+            let to = edge.to.trim();
+            if to.is_empty() {
+                continue;
+            }
+            let from = edge
+                .from
+                .clone()
+                .unwrap_or_else(|| default_from.to_string());
+            let label = edge.label.clone().unwrap_or_else(|| "related".to_string());
+            let props = if edge.props.is_null() {
+                Value::Object(serde_json::Map::new())
+            } else {
+                edge.props.clone()
+            };
+            let timestamp = now_ms();
+            let entity = GraphEdgeEntity {
+                id: format!("{}::{}::{}", from, to, timestamp),
+                tenant: tenant.clone(),
+                from: from.clone(),
+                to: to.to_string(),
+                label,
+                props,
+                timestamp_ms: timestamp,
+            };
+            if let Err(err) = self.store.create(tenant, &entity).await {
+                warn!(error = ?err, "persist graph edge failed");
+            }
+        }
+    }
+
+    async fn recall(
+        &self,
+        tenant: &TenantId,
+        node_id: String,
+        label: Option<String>,
+        limit: Option<u32>,
+    ) -> GraphRecallResponse {
+        let mut filter = serde_json::Map::new();
+        filter.insert("from".into(), Value::String(node_id.clone()));
+        if let Some(label_str) = label.as_ref() {
+            filter.insert("label".into(), Value::String(label_str.clone()));
+        }
+        let params = QueryParams {
+            filter: Value::Object(filter),
+            limit,
+            ..Default::default()
+        };
+        let edges = match self.store.select(tenant, params).await {
+            Ok(page) => page
+                .items
+                .into_iter()
+                .map(GraphEdgeRecord::from)
+                .collect::<Vec<_>>(),
+            Err(err) => {
+                warn!(error = ?err, "graph recall failed");
+                Vec::new()
+            }
+        };
+        let views = edges
+            .into_iter()
+            .map(GraphEdgeView::from)
+            .collect::<Vec<_>>();
+        GraphRecallResponse {
+            tenant: tenant.clone(),
+            node_id,
+            label,
+            edges: views,
+        }
+    }
+
+    #[cfg(test)]
+    async fn snapshot(&self, tenant: &TenantId, node_id: &str) -> Vec<GraphEdgeRecord> {
+        let params = QueryParams {
+            filter: json!({ "from": node_id }),
+            ..Default::default()
+        };
+        match self.store.select(tenant, params).await {
+            Ok(page) => page.items.into_iter().map(GraphEdgeRecord::from).collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+}
+
+struct RepoService {
+    graph: Arc<GraphService>,
+    store: Arc<dyn Repository<RepoRecordEntity>>,
+    seq: AtomicU64,
+}
+
+impl RepoService {
+    fn new(graph: Arc<GraphService>, store: Arc<dyn Repository<RepoRecordEntity>>) -> Self {
+        Self {
+            graph,
+            store,
+            seq: AtomicU64::new(1),
+        }
+    }
+
+    async fn append(
+        &self,
+        tenant: &TenantId,
+        payload: RepoAppendPayload,
+    ) -> Result<RepoAppendResponse, RepoError> {
+        let RepoAppendPayload {
+            repo,
+            tenant: _,
+            record_id,
+            data,
+            edges,
+        } = payload;
+
+        if repo.trim().is_empty() {
+            return Err(RepoError::Schema("repo missing".into()));
+        }
+        if data.is_null() {
+            return Err(RepoError::Schema("record payload missing".into()));
+        }
+
+        let repo_name = repo;
+        let record_id = record_id.unwrap_or_else(|| {
+            format!(
+                "{}::{}",
+                repo_name,
+                self.seq.fetch_add(1, Ordering::Relaxed)
+            )
+        });
+        let record = RepoRecord {
+            id: record_id.clone(),
+            data,
+            timestamp_ms: now_ms(),
+        };
+
+        self.graph.record_edges(tenant, &record_id, &edges).await;
+
+        self.graph.record_edges(tenant, &record_id, &edges).await;
+
+        let entity = RepoRecordEntity {
+            id: record_id.clone(),
+            tenant: tenant.clone(),
+            repo: repo_name.clone(),
+            data: record.data.clone(),
+            timestamp_ms: record.timestamp_ms,
+        };
+        self.store
+            .create(tenant, &entity)
+            .await
+            .map_err(storage_error_to_repo)?;
+
+        Ok(RepoAppendResponse {
+            tenant: tenant.clone(),
+            repo: repo_name,
+            record_id,
+            stored_at: now_ms(),
+        })
+    }
+
+    #[cfg(test)]
+    async fn records(&self, tenant: &TenantId, repo: &str) -> Vec<RepoRecord> {
+        let params = QueryParams {
+            filter: json!({ "repo": repo }),
+            ..Default::default()
+        };
+        match self.store.select(tenant, params).await {
+            Ok(page) => page.items.into_iter().map(RepoRecord::from).collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+}
+
+struct ObserveService {
+    store: Arc<dyn Repository<ObserveEventEntity>>,
+    seq: AtomicU64,
+}
+
+impl ObserveService {
+    fn new(store: Arc<dyn Repository<ObserveEventEntity>>) -> Self {
+        Self {
+            store,
+            seq: AtomicU64::new(1),
+        }
+    }
+
+    async fn emit(
+        &self,
+        tenant: &TenantId,
+        payload: ObserveEmitPayload,
+    ) -> Result<ObserveEmitResponse, ObserveError> {
+        let ObserveEmitPayload {
+            topic,
+            tenant: _,
+            event,
+            severity,
+            trace_id,
+        } = payload;
+
+        if topic.trim().is_empty() {
+            return Err(ObserveError::Schema("topic missing".into()));
+        }
+        if event.is_null() {
+            return Err(ObserveError::Schema("event payload missing".into()));
+        }
+
+        let event_id = format!("obs-{}", self.seq.fetch_add(1, Ordering::Relaxed));
+        let record = ObserveEvent {
+            event_id: event_id.clone(),
+            tenant: tenant.clone(),
+            topic: topic.clone(),
+            event: event.clone(),
+            severity: severity.clone(),
+            trace_id: trace_id.clone(),
+            timestamp_ms: now_ms(),
+        };
+
+        let entity = ObserveEventEntity {
+            id: event_id.clone(),
+            tenant: tenant.clone(),
+            topic: record.topic.clone(),
+            event: record.event.clone(),
+            severity: record.severity.clone(),
+            trace_id: record.trace_id.clone(),
+            timestamp_ms: record.timestamp_ms,
+        };
+
+        self.store
+            .create(tenant, &entity)
+            .await
+            .map_err(storage_error_to_observe)?;
+
+        Ok(ObserveEmitResponse {
+            tenant: tenant.clone(),
+            topic,
+            event_id,
+            ingested_at: now_ms(),
+        })
+    }
+
+    #[cfg(test)]
+    async fn snapshot(&self, tenant: &TenantId) -> Vec<ObserveEvent> {
+        match self.store.select(tenant, QueryParams::default()).await {
+            Ok(page) => page.items.into_iter().map(ObserveEvent::from).collect(),
+            Err(_) => Vec::new(),
+        }
     }
 }
 
@@ -2298,6 +3303,229 @@ struct LlmHistoryEntry {
     timestamp_ms: i64,
 }
 
+#[derive(Deserialize)]
+struct GraphRecallPayload {
+    #[serde(default)]
+    tenant: Option<String>,
+    node_id: String,
+    #[serde(default)]
+    label: Option<String>,
+    #[serde(default)]
+    limit: Option<u32>,
+}
+
+#[derive(Serialize)]
+struct GraphRecallResponse {
+    tenant: TenantId,
+    node_id: String,
+    label: Option<String>,
+    edges: Vec<GraphEdgeView>,
+}
+
+impl GraphRecallResponse {
+    fn into_json(self) -> Value {
+        json!({
+            "tenant": self.tenant.0,
+            "node_id": self.node_id,
+            "label": self.label,
+            "edges": self.edges,
+        })
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct GraphEdgeView {
+    from: String,
+    to: String,
+    label: String,
+    props: Value,
+    timestamp_ms: i64,
+}
+
+impl From<GraphEdgeRecord> for GraphEdgeView {
+    fn from(record: GraphEdgeRecord) -> Self {
+        Self {
+            from: record.from,
+            to: record.to,
+            label: record.label,
+            props: record.props,
+            timestamp_ms: record.timestamp_ms,
+        }
+    }
+}
+
+#[derive(Clone, Deserialize)]
+struct GraphEdgeInput {
+    #[serde(default)]
+    from: Option<String>,
+    to: String,
+    #[serde(default)]
+    label: Option<String>,
+    #[serde(default)]
+    props: Value,
+}
+
+impl Default for GraphEdgeInput {
+    fn default() -> Self {
+        Self {
+            from: None,
+            to: String::new(),
+            label: None,
+            props: Value::Null,
+        }
+    }
+}
+
+#[derive(Deserialize, Default)]
+struct RepoAppendPayload {
+    repo: String,
+    #[serde(default)]
+    tenant: Option<String>,
+    #[serde(default)]
+    record_id: Option<String>,
+    #[serde(default)]
+    data: Value,
+    #[serde(default)]
+    edges: Vec<GraphEdgeInput>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct RepoRecord {
+    id: String,
+    data: Value,
+    timestamp_ms: i64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct RepoRecordEntity {
+    id: String,
+    tenant: TenantId,
+    repo: String,
+    data: Value,
+    timestamp_ms: i64,
+}
+
+impl Entity for RepoRecordEntity {
+    const TABLE: &'static str = "gateway_repo_records";
+
+    fn id(&self) -> &str {
+        &self.id
+    }
+
+    fn tenant(&self) -> &TenantId {
+        &self.tenant
+    }
+}
+
+impl From<RepoRecordEntity> for RepoRecord {
+    fn from(value: RepoRecordEntity) -> Self {
+        Self {
+            id: value.id,
+            data: value.data,
+            timestamp_ms: value.timestamp_ms,
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct RepoAppendResponse {
+    tenant: TenantId,
+    repo: String,
+    record_id: String,
+    stored_at: i64,
+}
+
+impl RepoAppendResponse {
+    fn into_json(self) -> Value {
+        json!({
+            "tenant": self.tenant.0,
+            "repo": self.repo,
+            "record_id": self.record_id,
+            "stored_at": self.stored_at,
+        })
+    }
+}
+
+#[derive(Deserialize, Default)]
+struct ObserveEmitPayload {
+    topic: String,
+    #[serde(default)]
+    tenant: Option<String>,
+    #[serde(default)]
+    event: Value,
+    #[serde(default)]
+    severity: Option<String>,
+    #[serde(default)]
+    trace_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct ObserveEvent {
+    event_id: String,
+    tenant: TenantId,
+    topic: String,
+    event: Value,
+    severity: Option<String>,
+    trace_id: Option<String>,
+    timestamp_ms: i64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct ObserveEventEntity {
+    id: String,
+    tenant: TenantId,
+    topic: String,
+    event: Value,
+    severity: Option<String>,
+    trace_id: Option<String>,
+    timestamp_ms: i64,
+}
+
+impl Entity for ObserveEventEntity {
+    const TABLE: &'static str = "gateway_observe_events";
+
+    fn id(&self) -> &str {
+        &self.id
+    }
+
+    fn tenant(&self) -> &TenantId {
+        &self.tenant
+    }
+}
+
+impl From<ObserveEventEntity> for ObserveEvent {
+    fn from(value: ObserveEventEntity) -> Self {
+        Self {
+            event_id: value.id,
+            tenant: value.tenant,
+            topic: value.topic,
+            event: value.event,
+            severity: value.severity,
+            trace_id: value.trace_id,
+            timestamp_ms: value.timestamp_ms,
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct ObserveEmitResponse {
+    tenant: TenantId,
+    topic: String,
+    event_id: String,
+    ingested_at: i64,
+}
+
+impl ObserveEmitResponse {
+    fn into_json(self) -> Value {
+        json!({
+            "tenant": self.tenant.0,
+            "topic": self.topic,
+            "event_id": self.event_id,
+            "ingested_at": self.ingested_at,
+        })
+    }
+}
+
 #[derive(Deserialize, Default)]
 struct LlmCompletePayload {
     prompt: String,
@@ -2555,6 +3783,57 @@ fn llm_error_to_intercept(err: LlmError) -> InterceptError {
     InterceptError::from_error(err.into_inner())
 }
 
+#[derive(Debug)]
+enum RepoError {
+    Schema(String),
+    Storage(String),
+}
+
+fn repo_error_to_intercept(err: RepoError) -> InterceptError {
+    match err {
+        RepoError::Schema(msg) => InterceptError::schema(&msg),
+        RepoError::Storage(msg) => InterceptError::internal(&msg),
+    }
+}
+
+#[derive(Debug)]
+enum ObserveError {
+    Schema(String),
+    Storage(String),
+}
+
+fn observe_error_to_intercept(err: ObserveError) -> InterceptError {
+    match err {
+        ObserveError::Schema(msg) => InterceptError::schema(&msg),
+        ObserveError::Storage(msg) => InterceptError::internal(&msg),
+    }
+}
+
+fn storage_error_to_repo(err: StorageError) -> RepoError {
+    RepoError::Storage(err.to_string())
+}
+
+fn storage_error_to_observe(err: StorageError) -> ObserveError {
+    ObserveError::Storage(err.to_string())
+}
+
+#[derive(Debug)]
+enum ConfigRegistryError {
+    Schema(String),
+    Conflict(String),
+    Apply(String),
+}
+
+fn config_error_to_intercept(err: ConfigRegistryError) -> InterceptError {
+    match err {
+        ConfigRegistryError::Schema(msg) => InterceptError::schema(&msg),
+        ConfigRegistryError::Conflict(msg) => {
+            InterceptError::from_public(codes::STORAGE_CONFLICT, &msg)
+        }
+        ConfigRegistryError::Apply(msg) => InterceptError::internal(&msg),
+    }
+}
+
 #[derive(Deserialize)]
 struct ToolExecutePayload {
     #[serde(default)]
@@ -2572,6 +3851,13 @@ struct ToolExecutePayload {
     consent: Option<Consent>,
     #[serde(default)]
     call_id: Option<String>,
+}
+
+#[derive(Deserialize, Default)]
+struct ToolConfigPublishPayload {
+    version: String,
+    #[serde(default)]
+    manifests: Vec<ToolManifestEntry>,
 }
 
 #[derive(Deserialize)]
@@ -2964,6 +4250,63 @@ mod tests {
     use soulbase_tools::prelude::{
         CapabilityDecl, ConcurrencyKind, ConsentPolicy, IdempoKind, Limits, SafetyClass, SideEffect,
     };
+    use std::collections::HashMap;
+
+    struct DummyRequest {
+        method: String,
+        path: String,
+        headers: HashMap<String, String>,
+        body: Value,
+    }
+
+    impl DummyRequest {
+        fn new(method: &str, path: &str) -> Self {
+            Self {
+                method: method.into(),
+                path: path.into(),
+                headers: HashMap::new(),
+                body: Value::Null,
+            }
+        }
+
+        fn with_header(mut self, name: &str, value: &str) -> Self {
+            self.headers
+                .insert(name.to_ascii_lowercase(), value.to_string());
+            self
+        }
+    }
+
+    struct DummyResponse;
+
+    #[async_trait]
+    impl ProtoRequest for DummyRequest {
+        fn method(&self) -> &str {
+            &self.method
+        }
+
+        fn path(&self) -> &str {
+            &self.path
+        }
+
+        fn header(&self, name: &str) -> Option<String> {
+            self.headers.get(&name.to_ascii_lowercase()).cloned()
+        }
+
+        async fn read_json(&mut self) -> Result<Value, InterceptError> {
+            Ok(self.body.clone())
+        }
+    }
+
+    #[async_trait]
+    impl ProtoResponse for DummyResponse {
+        fn set_status(&mut self, _code: u16) {}
+
+        fn insert_header(&mut self, _name: &str, _value: &str) {}
+
+        async fn write_json(&mut self, _body: &Value) -> Result<(), InterceptError> {
+            Ok(())
+        }
+    }
 
     fn demo_manifest() -> ToolManifest {
         ToolManifest {
@@ -3174,6 +4517,438 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn auth_stage_accepts_bearer_token_with_scope() -> anyhow::Result<()> {
+        let mut routes = HashMap::new();
+        routes.insert(
+            "/secure".into(),
+            ServiceConfig {
+                name: "secure".into(),
+                route: "/secure".into(),
+                enabled: true,
+                description: None,
+                auth: Some(AuthConfig {
+                    scopes: vec!["graph:read".into()],
+                    allow_anonymous: false,
+                    ..Default::default()
+                }),
+                schema: None,
+                kind: ServiceKind::Other,
+                policy: None,
+            },
+        );
+        let auth = AuthBootstrap {
+            tokens: vec![ApiTokenConfig {
+                name: "cli".into(),
+                token: Some("token-1".into()),
+                token_env: None,
+                token_file: None,
+                tenant: "tenant-test".into(),
+                subject: Some(AuthSubjectConfig {
+                    kind: SubjectKind::Service,
+                    subject_id: "svc.cli".into(),
+                    claims: serde_json::Map::new(),
+                }),
+                scopes: vec!["graph:read".into()],
+            }],
+            ..Default::default()
+        };
+        let stage = GatewayAuthStage::new(Arc::new(routes), None, &auth).expect("auth stage");
+        let mut cx = InterceptContext::default();
+        let mut req =
+            DummyRequest::new("POST", "/secure").with_header("authorization", "Bearer token-1");
+        let mut rsp = DummyResponse;
+        stage
+            .handle(&mut cx, &mut req, &mut rsp)
+            .await
+            .expect("auth ok");
+        assert_eq!(
+            cx.subject
+                .as_ref()
+                .map(|s| s.subject_id.0.clone())
+                .as_deref(),
+            Some("svc.cli")
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn auth_stage_rejects_missing_scope() {
+        let mut routes = HashMap::new();
+        routes.insert(
+            "/repo".into(),
+            ServiceConfig {
+                name: "repo".into(),
+                route: "/repo".into(),
+                enabled: true,
+                description: None,
+                auth: Some(AuthConfig {
+                    scopes: vec!["repo:write".into()],
+                    allow_anonymous: false,
+                    ..Default::default()
+                }),
+                schema: None,
+                kind: ServiceKind::Other,
+                policy: None,
+            },
+        );
+        let auth = AuthBootstrap {
+            tokens: vec![ApiTokenConfig {
+                name: "cli".into(),
+                token: Some("token-2".into()),
+                token_env: None,
+                token_file: None,
+                tenant: "tenant-test".into(),
+                subject: None,
+                scopes: vec!["graph:read".into()],
+            }],
+            ..Default::default()
+        };
+        let stage = GatewayAuthStage::new(Arc::new(routes), None, &auth).expect("auth stage");
+        let mut cx = InterceptContext::default();
+        let mut req =
+            DummyRequest::new("POST", "/repo").with_header("authorization", "Bearer token-2");
+        let mut rsp = DummyResponse;
+        let err = stage
+            .handle(&mut cx, &mut req, &mut rsp)
+            .await
+            .expect_err("missing scope should fail");
+        match err {
+            InterceptError(obj) => assert_eq!(obj.code, codes::AUTH_FORBIDDEN),
+        }
+    }
+
+    #[tokio::test]
+    async fn auth_stage_accepts_hmac_signature() -> anyhow::Result<()> {
+        let mut routes = HashMap::new();
+        routes.insert(
+            "/repo".into(),
+            ServiceConfig {
+                name: "repo".into(),
+                route: "/repo".into(),
+                enabled: true,
+                description: None,
+                auth: Some(AuthConfig {
+                    scopes: vec!["repo:write".into()],
+                    allow_anonymous: false,
+                    ..Default::default()
+                }),
+                schema: None,
+                kind: ServiceKind::Other,
+                policy: None,
+            },
+        );
+        let auth = AuthBootstrap {
+            hmac_keys: vec![HmacKeyConfig {
+                key_id: "local-hmac".into(),
+                secret: Some("super-secret".into()),
+                secret_env: None,
+                secret_file: None,
+                tenant: "tenant-test".into(),
+                subject: None,
+                scopes: vec!["repo:write".into()],
+            }],
+            ..Default::default()
+        };
+        let stage = GatewayAuthStage::new(Arc::new(routes), None, &auth).expect("auth stage");
+        let date = "2025-01-01T00:00:00Z";
+        let canonical = format!("POST\n/repo\n{date}");
+        let mut mac = HmacSha256::new_from_slice(b"super-secret").unwrap();
+        mac.update(canonical.as_bytes());
+        let sig = hex_encode(mac.finalize().into_bytes());
+        let authz = format!("SB-HMAC local-hmac:{sig}");
+
+        let mut cx = InterceptContext::default();
+        let mut req = DummyRequest::new("POST", "/repo")
+            .with_header("authorization", &authz)
+            .with_header("x-sb-date", date);
+        let mut rsp = DummyResponse;
+        stage
+            .handle(&mut cx, &mut req, &mut rsp)
+            .await
+            .expect("hmac ok");
+        assert!(cx.subject.is_some());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn auth_stage_reads_token_from_env() -> anyhow::Result<()> {
+        let mut routes = HashMap::new();
+        routes.insert(
+            "/secure".into(),
+            ServiceConfig {
+                name: "secure".into(),
+                route: "/secure".into(),
+                enabled: true,
+                description: None,
+                auth: Some(AuthConfig {
+                    scopes: vec!["graph:read".into()],
+                    allow_anonymous: false,
+                    ..Default::default()
+                }),
+                schema: None,
+                kind: ServiceKind::Other,
+                policy: None,
+            },
+        );
+        let env_key = "GATEWAY_TEST_TOKEN";
+        env::set_var(env_key, "env-token");
+        let auth = AuthBootstrap {
+            tokens: vec![ApiTokenConfig {
+                name: "cli".into(),
+                token_env: Some(env_key.into()),
+                token: None,
+                token_file: None,
+                tenant: "tenant-test".into(),
+                subject: None,
+                scopes: vec!["graph:read".into()],
+            }],
+            ..Default::default()
+        };
+        let stage = GatewayAuthStage::new(Arc::new(routes), None, &auth).expect("auth stage");
+        let mut cx = InterceptContext::default();
+        let mut req =
+            DummyRequest::new("POST", "/secure").with_header("authorization", "Bearer env-token");
+        let mut rsp = DummyResponse;
+        stage
+            .handle(&mut cx, &mut req, &mut rsp)
+            .await
+            .expect("env token auth ok");
+        env::remove_var(env_key);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn auth_stage_errors_on_missing_secret() {
+        let routes = Arc::new(HashMap::new());
+        let auth = AuthBootstrap {
+            tokens: vec![ApiTokenConfig {
+                name: "cli".into(),
+                token_env: Some("MISSING_TOKEN".into()),
+                token: None,
+                token_file: None,
+                tenant: "tenant-test".into(),
+                subject: None,
+                scopes: vec![],
+            }],
+            ..Default::default()
+        };
+        match GatewayAuthStage::new(routes, None, &auth) {
+            Ok(_) => panic!("expected missing secret to fail"),
+            Err(err) => assert!(
+                err.to_string()
+                    .contains("environment variable MISSING_TOKEN"),
+                "unexpected error: {err}"
+            ),
+        }
+    }
+
+    fn sample_service_config(route: &str, policy: Option<ServicePolicyConfig>) -> ServiceConfig {
+        ServiceConfig {
+            name: route.trim_start_matches('/').to_string(),
+            route: route.to_string(),
+            enabled: true,
+            description: None,
+            auth: Some(AuthConfig {
+                allow_anonymous: false,
+                ..Default::default()
+            }),
+            schema: None,
+            kind: ServiceKind::RepoAppend,
+            policy,
+        }
+    }
+
+    fn sample_subject() -> Subject {
+        Subject {
+            kind: SubjectKind::Service,
+            subject_id: Id("svc.test".into()),
+            tenant: TenantId("tenant-policy".into()),
+            claims: serde_json::Map::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn policy_stage_allows_matching_rule() -> anyhow::Result<()> {
+        let mut routes = HashMap::new();
+        routes.insert(
+            "/repo".into(),
+            sample_service_config(
+                "/repo",
+                Some(ServicePolicyConfig {
+                    resource: Some("repo:timeline".into()),
+                    action: Some(Action::Write),
+                    attrs: None,
+                }),
+            ),
+        );
+        let rules = vec![PolicyRule {
+            id: "allow-repo".into(),
+            description: None,
+            resources: vec!["repo:*".into()],
+            actions: vec![Action::Write],
+            effect: PolicyEffect::Allow,
+            conditions: vec![],
+            obligations: vec![],
+        }];
+        let stage = GatewayPolicyStage::new(
+            Arc::new(routes),
+            Some(Arc::new(PolicyAuthorizer::new(rules))),
+        );
+        let mut cx = InterceptContext::default();
+        cx.subject = Some(sample_subject());
+        let mut req = DummyRequest::new("POST", "/repo");
+        let mut rsp = DummyResponse;
+        stage
+            .handle(&mut cx, &mut req, &mut rsp)
+            .await
+            .expect("policy allow");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn policy_stage_denies_without_match() {
+        let mut routes = HashMap::new();
+        routes.insert(
+            "/secure".into(),
+            sample_service_config(
+                "/secure",
+                Some(ServicePolicyConfig {
+                    resource: Some("secure:admin".into()),
+                    action: Some(Action::Write),
+                    attrs: None,
+                }),
+            ),
+        );
+        let rules = vec![PolicyRule {
+            id: "deny-admin".into(),
+            description: None,
+            resources: vec!["secure:*".into()],
+            actions: vec![Action::Write],
+            effect: PolicyEffect::Deny,
+            conditions: vec![],
+            obligations: vec![],
+        }];
+        let stage = GatewayPolicyStage::new(
+            Arc::new(routes),
+            Some(Arc::new(PolicyAuthorizer::new(rules))),
+        );
+        let mut cx = InterceptContext::default();
+        cx.subject = Some(sample_subject());
+        let mut req = DummyRequest::new("POST", "/secure");
+        let mut rsp = DummyResponse;
+        let err = stage
+            .handle(&mut cx, &mut req, &mut rsp)
+            .await
+            .expect_err("policy deny");
+        match err {
+            InterceptError(obj) => assert_eq!(obj.code, codes::POLICY_DENY_TOOL),
+        }
+    }
+
+    #[tokio::test]
+    async fn repo_append_records_and_edges() {
+        let datastore = MockDatastore::new();
+        let graph_store: Arc<dyn Repository<GraphEdgeEntity>> =
+            Arc::new(InMemoryRepository::<GraphEdgeEntity>::new(&datastore));
+        let graph = Arc::new(GraphService::new(graph_store.clone()));
+        let repo_store: Arc<dyn Repository<RepoRecordEntity>> =
+            Arc::new(InMemoryRepository::<RepoRecordEntity>::new(&datastore));
+        let repo = RepoService::new(graph.clone(), repo_store);
+        let tenant = TenantId("tenant-repo".into());
+
+        let payload = RepoAppendPayload {
+            repo: "timeline".into(),
+            data: serde_json::json!({ "summary": "ok" }),
+            edges: vec![GraphEdgeInput {
+                from: None,
+                to: "doc:beta".into(),
+                label: Some("follows".into()),
+                props: serde_json::json!({ "weight": 0.9 }),
+            }],
+            ..Default::default()
+        };
+
+        let response = repo.append(&tenant, payload).await.expect("append");
+        assert_eq!(response.repo, "timeline");
+
+        let records = repo.records(&tenant, "timeline").await;
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].id, response.record_id);
+
+        let edges = graph.snapshot(&tenant, &response.record_id).await;
+        assert!(
+            edges
+                .iter()
+                .any(|edge| edge.to == "doc:beta" && edge.label == "follows"),
+            "expected to find doc:beta edge, got {:?}",
+            edges
+        );
+    }
+
+    #[tokio::test]
+    async fn graph_recall_filters_by_label() {
+        let datastore = MockDatastore::new();
+        let store: Arc<dyn Repository<GraphEdgeEntity>> =
+            Arc::new(InMemoryRepository::<GraphEdgeEntity>::new(&datastore));
+        let service = GraphService::new(store);
+        let tenant = TenantId("tenant-graph".into());
+
+        service
+            .record_edges(
+                &tenant,
+                "node:alpha",
+                &[
+                    GraphEdgeInput {
+                        from: None,
+                        to: "node:beta".into(),
+                        label: Some("relates".into()),
+                        props: serde_json::json!({}),
+                    },
+                    GraphEdgeInput {
+                        from: None,
+                        to: "node:gamma".into(),
+                        label: Some("prefers".into()),
+                        props: serde_json::json!({}),
+                    },
+                ],
+            )
+            .await;
+
+        let recall = service
+            .recall(
+                &tenant,
+                "node:alpha".into(),
+                Some("prefers".into()),
+                Some(5),
+            )
+            .await;
+        assert_eq!(recall.edges.len(), 1);
+        assert_eq!(recall.edges[0].to, "node:gamma");
+        assert_eq!(recall.edges[0].label, "prefers");
+    }
+
+    #[tokio::test]
+    async fn observe_emit_tracks_events() {
+        let datastore = MockDatastore::new();
+        let store: Arc<dyn Repository<ObserveEventEntity>> =
+            Arc::new(InMemoryRepository::<ObserveEventEntity>::new(&datastore));
+        let service = ObserveService::new(store.clone());
+        let tenant = TenantId("tenant-observe".into());
+
+        let payload = ObserveEmitPayload {
+            topic: "demo.topic".into(),
+            event: serde_json::json!({ "payload": "ok" }),
+            ..Default::default()
+        };
+        let response = service.emit(&tenant, payload).await.expect("emit");
+        assert!(response.event_id.starts_with("obs-"));
+
+        let snapshot = service.snapshot(&tenant).await;
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot[0].topic, "demo.topic");
+    }
+
+    #[tokio::test]
     async fn tool_service_bootstrap_registers_manifests() -> anyhow::Result<()> {
         let bootstrap = ToolBootstrap {
             registry: ToolRegistryConfig::InMemory,
@@ -3240,6 +5015,69 @@ mod tests {
         assert!(!evidence[0].begins.is_empty());
         assert!(!evidence[0].ends.is_empty());
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn tool_config_registry_publish_updates_tool_service() -> anyhow::Result<()> {
+        let bootstrap = ToolBootstrap {
+            manifests: vec![ToolManifestEntry {
+                tenant: "tenant-test".into(),
+                manifest: demo_manifest(),
+            }],
+            ..Default::default()
+        };
+        let service = Arc::new(ToolService::from_bootstrap(&bootstrap).await?);
+        let registry = ToolConfigRegistry::new(bootstrap.manifests.clone());
+
+        let payload = ToolConfigPublishPayload {
+            version: "v2".into(),
+            manifests: vec![ToolManifestEntry {
+                tenant: "tenant-test".into(),
+                manifest: ToolManifest {
+                    version: "2.0.0".into(),
+                    ..demo_manifest()
+                },
+            }],
+        };
+
+        let snapshot = registry
+            .publish(payload, service.clone())
+            .await
+            .expect("publish");
+        assert_eq!(snapshot.version, "v2");
+        let listed = service
+            .list(&TenantId("tenant-test".into()))
+            .await
+            .expect("list");
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0]["version"], "2.0.0");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn tool_config_registry_rejects_duplicate_version() -> anyhow::Result<()> {
+        let bootstrap = ToolBootstrap {
+            manifests: vec![ToolManifestEntry {
+                tenant: "tenant-test".into(),
+                manifest: demo_manifest(),
+            }],
+            ..Default::default()
+        };
+        let service = Arc::new(ToolService::from_bootstrap(&bootstrap).await?);
+        let registry = ToolConfigRegistry::new(bootstrap.manifests.clone());
+        let payload = ToolConfigPublishPayload {
+            version: "bootstrap".into(),
+            manifests: bootstrap.manifests.clone(),
+        };
+        let err = registry
+            .publish(payload, service)
+            .await
+            .expect_err("should reject duplicate");
+        match err {
+            ConfigRegistryError::Conflict(_) => {}
+            other => panic!("unexpected error: {:?}", other),
+        }
         Ok(())
     }
 

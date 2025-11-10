@@ -57,6 +57,48 @@ required_headers = ["x-api-key"]
 required_fields = ["text"]
 
 [[services]]
+name = "graph.recall"
+route = "/api/graph/recall"
+kind = "graph_recall"
+description = "Graph adjacency recall"
+[services.schema]
+required_fields = ["node_id"]
+[services.auth]
+scopes = ["graph:read"]
+allow_anonymous = false
+
+[[services]]
+name = "observe.emit"
+route = "/api/observe/emit"
+kind = "observe_emit"
+description = "Observation event ingest"
+[services.schema]
+required_fields = ["topic", "event"]
+[services.auth]
+scopes = ["observe:emit"]
+allow_anonymous = false
+
+[[services]]
+name = "repo.append"
+route = "/api/repo/append"
+kind = "repo_append"
+description = "Append record to repo"
+[services.schema]
+required_fields = ["repo", "data"]
+[services.auth]
+scopes = ["repo:write"]
+allow_anonymous = false
+
+[[services]]
+name = "config.tools"
+route = "/api/config/tools"
+kind = "config_tools"
+description = "Tool manifest registry API"
+[services.auth]
+scopes = ["config:manage"]
+allow_anonymous = false
+
+[[services]]
 name = "tool.list"
 route = "/api/tools/list"
 kind = "tool_list"
@@ -129,3 +171,41 @@ default_embed_model = "local:emb"
 
 [[llm.providers]]
 kind = "local"
+
+[auth]
+
+[[auth.tokens]]
+name = "local-cli"
+token_env = "GATEWAY_TOKEN_LOCAL"
+tenant = "tenant-demo"
+scopes = ["graph:read", "repo:write", "observe:emit"]
+[auth.tokens.subject]
+kind = "Service"
+subject_id = "cli.local"
+
+[[auth.hmac_keys]]
+key_id = "local-hmac"
+secret_env = "GATEWAY_HMAC_LOCAL"
+tenant = "tenant-demo"
+scopes = ["repo:write"]
+[auth.hmac_keys.subject]
+kind = "Service"
+subject_id = "automation.local"
+
+[storage.repo]
+kind = "memory"
+
+[storage.observe]
+kind = "memory"
+
+[storage.graph]
+kind = "memory"
+
+[policy]
+
+[[policy.rules]]
+id = "allow-local"
+description = "Allow local development scopes"
+resources = ["route:/api/*"]
+actions = ["Read", "Write", "Invoke", "List"]
+effect = "Allow"
