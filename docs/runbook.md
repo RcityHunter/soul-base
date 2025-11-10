@@ -144,6 +144,19 @@ cargo test -p soulbase-gateway --test gateway_perf -- --ignored
 
 运行前无需额外服务依赖；Harness 会生成临时配置并注入 `GATEWAY_TOKEN_LOCAL` / `GATEWAY_HMAC_LOCAL`。若需持续压测，可将结果采集到 Prometheus 或纳入 CI，同时关注系统资源（CPU、内存、悬挂 FD）以定位瓶颈。
 
+### 7.2 最新一次压测基线（本地 2024-xx-xx）
+
+| 场景 | 请求数 × 并发 | Avg(ms) | P95(ms) | P99(ms) | 吞吐 (req/s) |
+| --- | --- | --- | --- | --- | --- |
+| `/api/tools/execute` | 50 × 8 | 19.15 | 74.62 | 75.47 | 399.34 |
+| `/api/collab/execute` | 40 × 6 | 9.25 | 29.55 | 30.90 | 563.86 |
+| `/api/llm/complete` | 40 × 6 | 6.29 | 26.41 | 27.12 | 863.58 |
+
+运行参数：  
+`GATEWAY_PERF_ITERATIONS_tools=50 GATEWAY_PERF_CONCURRENCY_tools=8 GATEWAY_PERF_ITERATIONS_collab=40 GATEWAY_PERF_CONCURRENCY_collab=6 GATEWAY_PERF_ITERATIONS_llm=40 GATEWAY_PERF_CONCURRENCY_llm=6 cargo test -p soulbase-gateway --test gateway_perf -- --ignored --nocapture`
+
+后续若更新压测结果，请同步该表与命令，保持可追溯。
+
 ---
 
 ## 5. 参考

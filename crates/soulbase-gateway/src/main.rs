@@ -23,7 +23,7 @@ use axum::{
 };
 use config::Config;
 use futures_util::StreamExt;
-use hex::{decode as hex_decode, encode as hex_encode};
+use hex::decode as hex_decode;
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -3296,6 +3296,7 @@ impl LlmService {
 }
 
 #[derive(Clone, Debug)]
+#[cfg_attr(not(test), allow(dead_code))]
 struct LlmHistoryEntry {
     tenant: TenantId,
     prompt: String,
@@ -3630,6 +3631,7 @@ struct LlmEmbedPayload {
     model: Option<String>,
     #[serde(default)]
     normalize: bool,
+    #[cfg_attr(not(test), allow(dead_code))]
     #[serde(default)]
     dim: Option<u32>,
 }
@@ -3996,12 +3998,14 @@ struct CachedExecution {
 const EVENT_TOPIC_BEGIN: &str = "tool.invoke.begin";
 const EVENT_TOPIC_END: &str = "tool.invoke.end";
 
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone, Debug)]
 enum ToolEventRecord {
     Begin(ToolInvokeBegin),
     End(ToolInvokeEndRecord),
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone, Debug)]
 struct ToolInvokeEndRecord {
     tenant: TenantId,
@@ -4116,6 +4120,7 @@ trait ToolEvidenceStore: Send + Sync {
     async fn snapshot(&self) -> Vec<StoredEvidence>;
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone, Debug)]
 struct StoredEvidence {
     tenant: TenantId,

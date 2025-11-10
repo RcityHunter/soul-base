@@ -87,7 +87,10 @@ async fn run_perf_case(
     default_iterations: usize,
     default_concurrency: usize,
 ) {
-    let iterations = perf_setting(format!("GATEWAY_PERF_ITERATIONS_{scope}"), default_iterations);
+    let iterations = perf_setting(
+        format!("GATEWAY_PERF_ITERATIONS_{scope}"),
+        default_iterations,
+    );
     let concurrency = perf_setting(
         format!("GATEWAY_PERF_CONCURRENCY_{scope}"),
         default_concurrency,
@@ -95,8 +98,15 @@ async fn run_perf_case(
     let process = GatewayProcess::spawn().await;
     let client = authorized_client();
     let url = format!("{}{}", process.base_url, route);
-    let stats = run_load(&client, url, process.token.clone(), payload, iterations, concurrency)
-        .await;
+    let stats = run_load(
+        &client,
+        url,
+        process.token.clone(),
+        payload,
+        iterations,
+        concurrency,
+    )
+    .await;
 
     println!(
         "[perf] route={route} total={} success={} avg_ms={:.2} p95_ms={:.2} \
@@ -106,7 +116,8 @@ async fn run_perf_case(
     if !stats.failures.is_empty() {
         println!(
             "[perf] failures sample: {}",
-            stats.failures
+            stats
+                .failures
                 .iter()
                 .take(3)
                 .cloned()
@@ -141,7 +152,12 @@ async fn run_load(
         set.spawn(async move {
             let _permit = permit;
             let begin = Instant::now();
-            let resp = client.post(url).bearer_auth(token).json(&payload).send().await;
+            let resp = client
+                .post(url)
+                .bearer_auth(token)
+                .json(&payload)
+                .send()
+                .await;
             match resp {
                 Ok(resp) => {
                     let status = resp.status();
