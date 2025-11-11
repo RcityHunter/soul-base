@@ -1,3 +1,5 @@
+#![allow(clippy::result_large_err)]
+
 use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -8,7 +10,7 @@ use base64::Engine;
 use parking_lot::RwLock;
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use soulbase_types::prelude::{Id, Subject, SubjectKind, TenantId};
 
 use crate::attr::AttributeProvider;
@@ -302,9 +304,9 @@ impl OidcAuthenticator {
         Ok((jwk, key, alg))
     }
 
-    fn extract_claim<'a>(
+    fn extract_claim(
         &self,
-        map: &'a mut Map<String, Value>,
+        map: &mut Map<String, Value>,
         field: &str,
     ) -> Result<String, AuthError> {
         match map.remove(field) {
@@ -324,7 +326,7 @@ impl OidcAuthenticator {
         validation.set_required_spec_claims(&["exp", "iat"]);
         validation.validate_exp = true;
         validation.validate_nbf = true;
-        validation.set_issuer(&[self.config.issuer.clone()]);
+        validation.set_issuer(std::slice::from_ref(&self.config.issuer));
         if !self.config.audience.is_empty() {
             validation.set_audience(&self.config.audience);
         } else {
@@ -437,7 +439,7 @@ struct JwkSet {
 mod tests {
     use super::*;
     use crate::model::{Action, AuthzRequest, ResourceUrn};
-    use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+    use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
     use serde_json::json;
     use std::time::{SystemTime, UNIX_EPOCH};
 

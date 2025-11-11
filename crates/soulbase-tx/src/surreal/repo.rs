@@ -1,4 +1,5 @@
 #![cfg(feature = "surreal")]
+#![allow(clippy::result_large_err)]
 
 use crate::errors::TxError;
 use crate::idempo::IdempoStore;
@@ -10,11 +11,10 @@ use crate::surreal::mapper;
 use crate::surreal::schema;
 use crate::util::now_ms;
 use async_trait::async_trait;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use soulbase_storage::prelude::{
     Datastore, MigrationScript, QueryExecutor, Session, StorageError, Transaction,
 };
-use soulbase_storage::spi::query::QueryOutcome;
 use soulbase_storage::surreal::{SurrealDatastore, SurrealSession};
 use soulbase_types::prelude::TenantId;
 use std::collections::HashSet;

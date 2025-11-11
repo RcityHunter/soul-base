@@ -6,10 +6,13 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 
+type UsageKey = (String, String, String, String);
+type UsageMap = HashMap<UsageKey, u64>;
+
 #[async_trait]
 pub trait QuotaStore: Send + Sync {
     async fn check_and_consume(&self, key: &QuotaKey, cost: u64)
-        -> Result<QuotaOutcome, AuthError>;
+    -> Result<QuotaOutcome, AuthError>;
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -33,7 +36,7 @@ impl QuotaConfig {
 #[derive(Clone, Default)]
 pub struct MemoryQuotaStore {
     config: QuotaConfig,
-    usage: Arc<RwLock<HashMap<(String, String, String, String), u64>>>,
+    usage: Arc<RwLock<UsageMap>>,
 }
 
 impl MemoryQuotaStore {

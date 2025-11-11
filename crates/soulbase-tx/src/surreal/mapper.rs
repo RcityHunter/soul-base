@@ -4,7 +4,7 @@ use crate::model::{
     DeadKind, DeadLetter, DeadLetterRef, IdempoState, MsgId, OutboxMessage, OutboxStatus,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use soulbase_types::prelude::TenantId;
 
 #[derive(Serialize, Deserialize)]
@@ -89,7 +89,7 @@ pub fn decode_outbox(value: Value) -> Result<OutboxMessage, serde_json::Error> {
     let envelope_id = record
         .envelope_id
         .filter(|s| !s.is_empty())
-        .map(|s| soulbase_types::prelude::Id(s));
+        .map(soulbase_types::prelude::Id);
     Ok(OutboxMessage {
         id: MsgId(record.msg_id),
         tenant: TenantId(record.tenant),

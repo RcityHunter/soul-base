@@ -35,8 +35,10 @@ async fn s3_put_head_get_delete_roundtrip() {
     };
 
     let client = build_client().await;
-    let mut config = S3Config::default();
-    config.key_prefix = test_prefix();
+    let config = S3Config {
+        key_prefix: test_prefix(),
+        ..Default::default()
+    };
 
     let store = S3BlobStore::new(client).with_config(config);
 

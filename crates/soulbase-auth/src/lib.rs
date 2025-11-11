@@ -1,3 +1,5 @@
+#![allow(clippy::result_large_err)]
+
 pub mod attr;
 pub mod authn;
 pub mod cache;
