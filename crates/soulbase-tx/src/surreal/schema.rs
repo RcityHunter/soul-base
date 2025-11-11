@@ -1,5 +1,3 @@
-#![cfg(feature = "surreal")]
-
 use sha2::{Digest, Sha256};
 use soulbase_storage::prelude::MigrationScript;
 

@@ -26,18 +26,20 @@ impl MemorySource {
     }
 
     pub fn id(&self) -> &'static str {
-        &self.id
+        self.id
     }
 
     pub fn set(&self, key: &str, value: Value) {
         let mut guard = self.state.write();
-        crate::access::set_path(&mut *guard, key, value);
+        let map = &mut *guard;
+        crate::access::set_path(map, key, value);
         let _ = self.notifier.send(vec![key.to_string()]);
     }
 
     pub fn merge(&self, map: Map<String, Value>) {
         let mut guard = self.state.write();
-        merge_object(&mut *guard, map.clone());
+        let dst = &mut *guard;
+        merge_object(dst, map.clone());
         let changed: Vec<String> = map.keys().cloned().collect();
         let _ = self.notifier.send(changed);
     }

@@ -42,6 +42,7 @@ pub fn presign_put(
     ))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn verify_url(
     secret: &str,
     method: &str,

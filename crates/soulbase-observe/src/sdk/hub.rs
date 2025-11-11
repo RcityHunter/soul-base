@@ -1,18 +1,18 @@
-use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use tracing::warn;
 
-use crate::ObserveError;
 use crate::ctx::ObserveCtx;
-use crate::export::Exporter;
 use crate::export::prometheus::PrometheusExporter;
+use crate::export::Exporter;
 use crate::model::{EvidenceEnvelope, LogEvent, MetricSpec};
 use crate::pipeline::router::{BroadcastRouter, ObserveRouter, RouteDecision};
 use crate::sdk::evidence::EvidenceSink;
 use crate::sdk::log::Logger;
 use crate::sdk::metrics::{CounterHandle, GaugeHandle, HistogramHandle, Meter};
+use crate::ObserveError;
 
 #[derive(Clone)]
 pub struct PrometheusLogger<R>

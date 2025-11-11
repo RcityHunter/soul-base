@@ -11,6 +11,9 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+type SecretFetchFuture = BoxFuture<'static, Result<Option<Value>, ConfigError>>;
+type SecretFetchFn = dyn Fn(String) -> SecretFetchFuture + Send + Sync;
+
 #[async_trait]
 pub trait SecretResolver: Send + Sync {
     fn id(&self) -> &'static str;
@@ -142,6 +145,12 @@ impl EnvSecretResolver {
     }
 }
 
+impl Default for EnvSecretResolver {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[async_trait]
 impl SecretResolver for EnvSecretResolver {
     fn id(&self) -> &'static str {
@@ -233,6 +242,12 @@ impl FileSecretResolver {
     }
 }
 
+impl Default for FileSecretResolver {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[async_trait]
 impl SecretResolver for FileSecretResolver {
     fn id(&self) -> &'static str {
@@ -270,8 +285,7 @@ impl SecretResolver for FileSecretResolver {
 /// (URIs like secret://resolver/key). Keys may be percent-encoded.
 pub struct KvSecretResolver {
     id: &'static str,
-    fetcher:
-        Arc<dyn Fn(String) -> BoxFuture<'static, Result<Option<Value>, ConfigError>> + Send + Sync>,
+    fetcher: Arc<SecretFetchFn>,
     error_on_missing: bool,
 }
 
@@ -281,7 +295,7 @@ impl KvSecretResolver {
         F: Fn(String) -> Fut + Send + Sync + 'static,
         Fut: std::future::Future<Output = Result<Option<Value>, ConfigError>> + Send + 'static,
     {
-        let fetcher = Arc::new(move |key: String| fetcher(key).boxed());
+        let fetcher: Arc<SecretFetchFn> = Arc::new(move |key: String| fetcher(key).boxed());
         Self {
             id,
             fetcher,

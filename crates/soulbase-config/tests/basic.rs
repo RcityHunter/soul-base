@@ -62,12 +62,12 @@ fn loader_builder_combines_sources_in_order() {
     {
         let mut guard = remote_state.lock();
         access::set_path(
-            &mut *guard,
+            &mut guard,
             "app.name",
             serde_json::Value::String("from_remote".into()),
         );
         access::set_path(
-            &mut *guard,
+            &mut guard,
             "app.version",
             serde_json::Value::String("1".into()),
         );
@@ -126,15 +126,11 @@ fn loader_builder_honors_cli_overrides_after_env_and_remote() {
     {
         let mut guard = remote_state.lock();
         access::set_path(
-            &mut *guard,
+            &mut guard,
             "app.priority",
             serde_json::Value::String("remote".into()),
         );
-        access::set_path(
-            &mut *guard,
-            "app.remote_only",
-            serde_json::Value::Bool(true),
-        );
+        access::set_path(&mut guard, "app.remote_only", serde_json::Value::Bool(true));
     }
     let remote_clone = remote_state.clone();
     let remote = RemoteSource::new("remote-precedence", move || {

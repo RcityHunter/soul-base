@@ -128,6 +128,12 @@ impl LoaderBuilder {
     }
 }
 
+impl Default for LoaderBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Loader {
     pub fn builder() -> LoaderBuilder {
         LoaderBuilder::new()
@@ -439,10 +445,10 @@ fn fallback_for_key<'a>(
     })
 }
 
-fn fallback_for_index<'a>(
-    fallback: Option<&'a serde_json::Value>,
+fn fallback_for_index(
+    fallback: Option<&serde_json::Value>,
     idx: usize,
-) -> Option<&'a serde_json::Value> {
+) -> Option<&serde_json::Value> {
     fallback.and_then(|value| match value {
         serde_json::Value::Array(items) => items.get(idx),
         _ => None,

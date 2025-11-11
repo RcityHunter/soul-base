@@ -5,6 +5,7 @@ use aws_sdk_s3::Client;
 use bytes::Bytes;
 use chrono::Utc;
 use soulbase_blob::prelude::*;
+use soulbase_blob::s3::{S3BlobStore, S3Config};
 use std::collections::BTreeMap;
 use tokio::time::Duration;
 

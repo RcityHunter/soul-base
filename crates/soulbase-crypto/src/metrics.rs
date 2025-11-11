@@ -2,8 +2,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 #[cfg(feature = "observe")]
-use soulbase_observe::model::{MetricKind, MetricSpec};
-#[cfg(feature = "observe")]
 use soulbase_observe::sdk::metrics::{CounterHandle, Meter};
 
 #[cfg(feature = "observe")]

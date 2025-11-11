@@ -62,7 +62,7 @@ impl FsBlobStore {
     }
 
     fn digest(bytes: &[u8]) -> Result<(String, Digest), BlobError> {
-        let digester = DefaultDigester::default();
+        let digester = DefaultDigester;
         let digest = digester
             .sha256(bytes)
             .map_err(|err| BlobError::unknown(&format!("digest failed: {err}")))?;

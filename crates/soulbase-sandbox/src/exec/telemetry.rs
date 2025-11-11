@@ -83,7 +83,7 @@ impl SandboxTelemetry {
         }
 
         let ctx = self.ctx(profile, op);
-        let redactor = NoopRedactor::default();
+        let redactor = NoopRedactor;
         let summary = summarize_exec_output(op, result);
         let degradation_reason = result
             .out
@@ -129,7 +129,7 @@ impl SandboxTelemetry {
         self.meter.gauge(&SANDBOX_EXEC_LATENCY_MS).set(latency_ms);
 
         let ctx = self.ctx(profile, op);
-        let redactor = NoopRedactor::default();
+        let redactor = NoopRedactor;
         let mut builder = LogBuilder::new(LogLevel::Error, "sandbox exec failed")
             .label("tool", profile.tool_name.clone())
             .label("op", op.kind_name())

@@ -1,5 +1,3 @@
-#![cfg(feature = "surreal")]
-
 use crate::spi::migrate::MigrationScript;
 use sha2::{Digest, Sha256};
 

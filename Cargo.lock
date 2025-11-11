@@ -5299,6 +5299,7 @@ dependencies = [
  "sha2",
  "soulbase-crypto",
  "soulbase-errors",
+ "soulbase-observe",
  "tempfile",
  "thiserror 1.0.69",
  "tokio",

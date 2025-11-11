@@ -14,6 +14,7 @@ use serde_json::{json, Value};
 use soulbase_storage::prelude::{
     Datastore, MigrationScript, QueryExecutor, Session, StorageError, Transaction,
 };
+use soulbase_storage::spi::query::QueryOutcome;
 use soulbase_storage::surreal::{SurrealDatastore, SurrealSession};
 use soulbase_types::prelude::TenantId;
 use std::collections::HashSet;
@@ -85,7 +86,7 @@ impl OutboxStore for SurrealOutboxStore {
         let mut tx = map_result(session.begin().await)?;
 
         let limit = Self::select_limit(batch, group_by_key);
-        let candidates_val = map_result(
+        let candidates_outcome = map_result(
             tx.query(
                 r#"SELECT msg_id, tenant, channel, payload, attempts, status, visible_at,
                              lease_worker, lease_until, last_error, dispatch_key, envelope_id,
@@ -106,8 +107,7 @@ impl OutboxStore for SurrealOutboxStore {
             .await,
         )?;
 
-        println!("candidates JSON string: {}", candidates_val);
-        let mut candidates = mapper::decode_outbox_list(candidates_val)
+        let mut candidates = mapper::decode_outbox_list(Value::Array(candidates_outcome.rows))
             .map_err(|err| TxError::internal(&format!("decode outbox candidate: {err}")))?;
 
         if candidates.is_empty() {
@@ -289,7 +289,7 @@ impl OutboxStore for SurrealOutboxStore {
         id: &MsgId,
     ) -> Result<Option<crate::model::OutboxStatus>, TxError> {
         let session = self.session().await?;
-        let value = map_result(
+        let outcome = map_result(
             session
                 .query(
                     "SELECT msg_id, tenant, channel, payload, attempts, status, visible_at, lease_worker, lease_until, last_error, dispatch_key, envelope_id, created_at, updated_at FROM tx_outbox WHERE tenant = $tenant AND msg_id = $msg_id LIMIT 1",
@@ -300,7 +300,7 @@ impl OutboxStore for SurrealOutboxStore {
                 )
                 .await,
         )?;
-        let mut messages = mapper::decode_outbox_list(value)
+        let mut messages = mapper::decode_outbox_list(Value::Array(outcome.rows))
             .map_err(|err| TxError::internal(&format!("decode outbox status: {err}")))?;
         Ok(messages.pop().map(|msg| msg.status))
     }
@@ -344,7 +344,7 @@ impl DeadStore for SurrealDeadStore {
         limit: u32,
     ) -> Result<Vec<DeadLetterRef>, TxError> {
         let session = self.session().await?;
-        let value = map_result(
+        let outcome = map_result(
             session
                 .query(
                     "SELECT letter_id, tenant, kind, last_error, note, stored_at FROM tx_dead_letter WHERE tenant = $tenant AND kind = $kind ORDER BY stored_at DESC LIMIT $limit",
@@ -356,14 +356,14 @@ impl DeadStore for SurrealDeadStore {
                 )
                 .await,
         )?;
-        let letters = mapper::decode_dead_list(value)
+        let letters = mapper::decode_dead_list(Value::Array(outcome.rows))
             .map_err(|err| TxError::internal(&format!("decode dead-letter list: {err}")))?;
         Ok(letters.into_iter().map(|entry| entry.reference).collect())
     }
 
     async fn inspect(&self, reference: &DeadLetterRef) -> Result<Option<DeadLetter>, TxError> {
         let session = self.session().await?;
-        let value = map_result(
+        let outcome = map_result(
             session
                 .query(
                     "SELECT letter_id, tenant, kind, last_error, note, stored_at FROM tx_dead_letter WHERE tenant = $tenant AND kind = $kind AND letter_id = $letter_id LIMIT 1",
@@ -371,7 +371,7 @@ impl DeadStore for SurrealDeadStore {
                 )
                 .await,
         )?;
-        let mut letters = mapper::decode_dead_list(value)
+        let mut letters = mapper::decode_dead_list(Value::Array(outcome.rows))
             .map_err(|err| TxError::internal(&format!("decode dead-letter inspect: {err}")))?;
         Ok(letters.pop())
     }
@@ -436,18 +436,14 @@ impl IdempoStore for SurrealIdempoStore {
         let mut tx = map_result(session.begin().await)?;
         let now = now_ms();
 
-        let value = map_result(
+        let outcome = map_result(
             tx.query(
                 "SELECT tenant, key, hash, state, digest, error, expires_at, updated_at FROM tx_idempo WHERE tenant = $tenant AND key = $key LIMIT 1",
                 json!({"tenant": tenant.0, "key": key}),
             )
             .await,
         )?;
-        let records = match value {
-            Value::Array(items) => items,
-            Value::Null => Vec::new(),
-            other => vec![other],
-        };
+        let records = outcome.rows;
 
         if let Some(item) = records.into_iter().find(|v| !v.is_null()) {
             let record = mapper::decode_idempo(item)
@@ -534,7 +530,7 @@ impl IdempoStore for SurrealIdempoStore {
     ) -> Result<(), TxError> {
         let session = self.session().await?;
         let now = now_ms();
-        let value = map_result(
+        let outcome = map_result(
             session
                 .query(
                     "SELECT tenant, key, hash, state, digest, error, expires_at, updated_at FROM tx_idempo WHERE tenant = $tenant AND key = $key LIMIT 1",
@@ -542,11 +538,7 @@ impl IdempoStore for SurrealIdempoStore {
                 )
                 .await,
         )?;
-        let records = match value {
-            Value::Array(items) => items,
-            Value::Null => Vec::new(),
-            other => vec![other],
-        };
+        let records = outcome.rows;
         let item = records
             .into_iter()
             .find(|v| !v.is_null())
@@ -583,7 +575,7 @@ impl IdempoStore for SurrealIdempoStore {
     ) -> Result<(), TxError> {
         let session = self.session().await?;
         let now = now_ms();
-        let value = map_result(
+        let outcome = map_result(
             session
                 .query(
                     "SELECT tenant, key, hash, state, digest, error, expires_at, updated_at FROM tx_idempo WHERE tenant = $tenant AND key = $key LIMIT 1",
@@ -591,7 +583,7 @@ impl IdempoStore for SurrealIdempoStore {
                 )
                 .await,
         )?;
-        let records = match value {
+        let records = match Value::Array(outcome.rows) {
             Value::Array(items) => items,
             Value::Null => Vec::new(),
             other => vec![other],

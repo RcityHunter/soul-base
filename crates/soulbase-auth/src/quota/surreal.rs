@@ -4,6 +4,7 @@ use crate::prelude::AuthError;
 use crate::quota::store::{QuotaConfig, QuotaStore};
 use async_trait::async_trait;
 use serde_json::{json, Value};
+use soulbase_storage::spi::query::QueryOutcome;
 use soulbase_storage::surreal::SurrealDatastore;
 use soulbase_storage::Session;
 use soulbase_storage::{Datastore, QueryExecutor, Transaction};
@@ -46,25 +47,21 @@ impl SurrealQuotaStore {
             .as_millis() as i64
     }
 
-    fn parse_usage_limit(value: Value, default_limit: u64) -> Result<(u64, u64), AuthError> {
-        match value {
-            Value::Array(rows) => {
-                let mut usage = 0u64;
-                let mut limit = default_limit;
-                if let Some(Value::Object(row)) = rows.into_iter().next() {
-                    if let Some(value) = row.get("usage").and_then(Value::as_u64) {
-                        usage = value;
-                    }
-                    if let Some(value) = row.get("limit").and_then(Value::as_u64) {
-                        limit = value;
-                    }
-                }
-                Ok((usage, limit))
+    fn parse_usage_limit(
+        outcome: QueryOutcome,
+        default_limit: u64,
+    ) -> Result<(u64, u64), AuthError> {
+        let mut usage = 0u64;
+        let mut limit = default_limit;
+        if let Some(Value::Object(row)) = outcome.rows.into_iter().next() {
+            if let Some(value) = row.get("usage").and_then(Value::as_u64) {
+                usage = value;
             }
-            other => Err(errors::provider_unavailable(&format!(
-                "unexpected surreal usage response: {other}"
-            ))),
+            if let Some(value) = row.get("limit").and_then(Value::as_u64) {
+                limit = value;
+            }
         }
+        Ok((usage, limit))
     }
 }
 
