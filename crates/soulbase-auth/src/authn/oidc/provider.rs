@@ -10,7 +10,7 @@ use base64::Engine;
 use parking_lot::RwLock;
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value, json};
+use serde_json::{json, Map, Value};
 use soulbase_types::prelude::{Id, Subject, SubjectKind, TenantId};
 
 use crate::attr::AttributeProvider;
@@ -439,7 +439,7 @@ struct JwkSet {
 mod tests {
     use super::*;
     use crate::model::{Action, AuthzRequest, ResourceUrn};
-    use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
+    use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
     use serde_json::json;
     use std::time::{SystemTime, UNIX_EPOCH};
 

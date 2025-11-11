@@ -4,7 +4,7 @@ use soulbase_crypto::prelude::*;
 
 #[test]
 fn canonical_json_is_stable_and_rejects_float() {
-    let cano = JsonCanonicalizer::default();
+    let cano = JsonCanonicalizer;
     let a = json!({"b":2,"a":1,"c":{"y":1,"x":2},"arr":[3,2,1]});
     let b = json!({"c":{"x":2,"y":1},"a":1,"arr":[3,2,1],"b":2});
 
@@ -18,8 +18,8 @@ fn canonical_json_is_stable_and_rejects_float() {
 
 #[test]
 fn digest_and_commit() {
-    let cano = JsonCanonicalizer::default();
-    let dig = DefaultDigester::default();
+    let cano = JsonCanonicalizer;
+    let dig = DefaultDigester;
     let payload = json!({"a":1,"b":2});
     let d = dig.commit_json(&cano, &payload, "sha256").unwrap();
     assert_eq!(d.algo, "sha256");
@@ -52,7 +52,7 @@ fn sign_and_verify_ed25519_jws_detached() {
 #[cfg(feature = "aead-xchacha")]
 #[test]
 fn aead_xchacha_roundtrip_and_hkdf() {
-    let aead = XChaChaAead::default();
+    let aead = XChaChaAead;
     let key = hkdf_extract_expand(b"salt", b"ikm", b"tenant:resource:env", 32);
 
     let mut nonce = [0u8; 24];

@@ -11,7 +11,7 @@ use crate::surreal::mapper;
 use crate::surreal::schema;
 use crate::util::now_ms;
 use async_trait::async_trait;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use soulbase_storage::prelude::{
     Datastore, MigrationScript, QueryExecutor, Session, StorageError, Transaction,
 };
