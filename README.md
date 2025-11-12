@@ -1,53 +1,11 @@
 # Soul Base
 
-<div class="language-switch" align="right">
-  <input type="radio" id="lang-zh" name="lang" checked>
-  <label for="lang-zh">中文</label>
-  <input type="radio" id="lang-en" name="lang">
-  <label for="lang-en">English</label>
-</div>
+> 使用下方折叠面板切换语言：
+> - [中文](#中文)
+> - [English](#english)
 
-<style>
-.language-switch {
-  display: inline-flex;
-  gap: 0.75rem;
-  font-weight: 600;
-  margin-bottom: 1rem;
-}
-.language-switch input[type="radio"] {
-  display: none;
-}
-.language-switch label {
-  cursor: pointer;
-  padding: 0.1rem 0.6rem;
-  border-radius: 0.4rem;
-  border: 1px solid #ccc;
-  font-size: 0.88rem;
-}
-#lang-zh:checked + label,
-#lang-en:checked + label {
-  background: #222;
-  color: #fff;
-  border-color: #222;
-}
-#lang-zh:checked ~ #lang-en + label,
-#lang-en:checked ~ #lang-zh + label {
-  background: transparent;
-  color: inherit;
-  border-color: #ccc;
-}
-.lang-section {
-  display: none;
-}
-#lang-zh:checked ~ .lang-zh {
-  display: block;
-}
-#lang-en:checked ~ .lang-en {
-  display: block;
-}
-</style>
-
-<div class="lang-section lang-zh">
+<details open>
+<summary><strong>中文</strong></summary>
 
 ## 概览
 
@@ -116,9 +74,10 @@ cargo run -p soulbase-gateway
 
 欢迎通过 Issue/PR 贡献新的薄腰能力、测试、性能优化与文档。
 
-</div>
+</details>
 
-<div class="lang-section lang-en">
+<details>
+<summary><strong>English</strong></summary>
 
 ## Overview
 
@@ -179,4 +138,4 @@ cargo run -p soulbase-gateway
 
 Contributions that improve the thin-waist API surface, testing, performance, or documentation are highly appreciated.
 
-</div>
+</details>
