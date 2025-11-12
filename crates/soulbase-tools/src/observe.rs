@@ -24,16 +24,30 @@ pub fn ctx_for_tool(tenant: &str, tool: &ToolId, action: &str) -> ObserveCtx {
 }
 
 #[cfg(feature = "observe")]
+pub struct LogInvocationParams<'a> {
+    pub tenant: &'a str,
+    pub tool: &'a ToolId,
+    pub status: &'a str,
+    pub code: Option<&'a str>,
+    pub latency_ms: u64,
+    pub degradation: Option<&'a str>,
+}
+
+#[cfg(feature = "observe")]
 pub async fn log_invocation(
     logger: &dyn Logger,
     ctx: &ObserveCtx,
-    tenant: &str,
-    tool: &ToolId,
-    status: &str,
-    code: Option<&str>,
-    latency_ms: u64,
-    degradation: Option<&str>,
+    params: LogInvocationParams<'_>,
 ) {
+    let LogInvocationParams {
+        tenant,
+        tool,
+        status,
+        code,
+        latency_ms,
+        degradation,
+    } = params;
+
     let level = match status {
         "error" => LogLevel::Error,
         "degraded" => LogLevel::Warn,
@@ -51,6 +65,6 @@ pub async fn log_invocation(
     if let Some(reason) = degradation {
         builder = builder.field("degradation", reason.into());
     }
-    let event = builder.finish(ctx, &NoopRedactor::default());
+    let event = builder.finish(ctx, &NoopRedactor);
     logger.log(ctx, event).await;
 }

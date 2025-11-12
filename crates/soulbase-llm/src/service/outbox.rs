@@ -7,7 +7,8 @@ use soulbase_tools::prelude::{
     InvokeRequest, InvokeResult, InvokeStatus, Invoker, InvokerImpl, PreflightOutput, ToolCall,
 };
 use soulbase_tx::prelude::{
-    Dispatcher as TxDispatcher, RetryPolicy, SurrealDeadStore, SurrealOutboxStore, TxError,
+    Dispatcher as TxDispatcher, RetryPolicy, SurrealDeadStore, SurrealOutboxStore, Transport,
+    TxError,
 };
 use soulbase_types::tenant::TenantId;
 
@@ -15,8 +16,8 @@ use crate::service::infra::InfraManager;
 
 pub struct OutboxDispatcher {
     infra: Arc<InfraManager>,
-    outbox: Arc<SurrealOutboxStore>,
-    dead: Arc<SurrealDeadStore>,
+    outbox: SurrealOutboxStore,
+    dead: SurrealDeadStore,
     worker_id: String,
     lease_ms: u64,
     batch: u32,
@@ -27,8 +28,8 @@ pub struct OutboxDispatcher {
 impl OutboxDispatcher {
     pub fn new(
         infra: Arc<InfraManager>,
-        outbox: Arc<SurrealOutboxStore>,
-        dead: Arc<SurrealDeadStore>,
+        outbox: SurrealOutboxStore,
+        dead: SurrealDeadStore,
     ) -> Self {
         Self {
             infra,
@@ -47,10 +48,10 @@ impl OutboxDispatcher {
             .infra
             .queue_for(tenant)
             .await
-            .map_err(|err| TxError::from(err.0))?;
+            .map_err(|err| TxError::from(err.into_inner()))?;
 
         let dispatcher = TxDispatcher {
-            transport: queue.transport.clone(),
+            transport: TransportAdapter(queue.transport.clone()),
             store: self.outbox.clone(),
             dead: self.dead.clone(),
             worker_id: self.worker_id.clone(),
@@ -95,5 +96,15 @@ impl Invoker for OutboxInvoker {
             }
         }
         Ok(result)
+    }
+}
+
+#[derive(Clone)]
+struct TransportAdapter(Arc<dyn Transport>);
+
+#[async_trait]
+impl Transport for TransportAdapter {
+    async fn send(&self, topic: &str, payload: &serde_json::Value) -> Result<(), TxError> {
+        self.0.send(topic, payload).await
     }
 }

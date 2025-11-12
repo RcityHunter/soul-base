@@ -2,17 +2,16 @@ use std::time::Instant;
 
 use crate::policy::CircuitBreakerPolicy;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub enum CircuitState {
+    #[default]
     Closed,
-    Open { since: Instant },
-    HalfOpen { probes: u32 },
-}
-
-impl Default for CircuitState {
-    fn default() -> Self {
-        CircuitState::Closed
-    }
+    Open {
+        since: Instant,
+    },
+    HalfOpen {
+        probes: u32,
+    },
 }
 
 pub struct CircuitBreaker {

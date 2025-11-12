@@ -60,7 +60,7 @@ use soulbase_storage::mock::{InMemoryRepository, MockDatastore};
 use soulbase_storage::model::{Entity, QueryParams};
 #[cfg(any(feature = "registry_surreal", feature = "idempo_surreal"))]
 use soulbase_storage::surreal::{SurrealConfig, SurrealDatastore};
-use soulbase_storage::{errors::StorageError, spi::repo::Repository};
+use soulbase_storage::{errors::StorageError, spi::repo::Repository, Datastore, QueryExecutor};
 #[cfg(feature = "registry_surreal")]
 use soulbase_tools::prelude::SurrealToolRegistry;
 use soulbase_tools::{
@@ -309,7 +309,7 @@ struct SchemaConfig {
     required_fields: Vec<String>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 #[serde(rename_all = "snake_case")]
 enum ServiceKind {
     ToolExecute,
@@ -324,13 +324,8 @@ enum ServiceKind {
     ObserveEmit,
     RepoAppend,
     ConfigTools,
+    #[default]
     Other,
-}
-
-impl Default for ServiceKind {
-    fn default() -> Self {
-        ServiceKind::Other
-    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -367,7 +362,7 @@ impl ServiceConfig {
         self.policy
             .as_ref()
             .and_then(|p| p.action.clone())
-            .unwrap_or_else(|| match self.kind {
+            .unwrap_or(match self.kind {
                 ServiceKind::ToolExecute | ServiceKind::RepoAppend => Action::Write,
                 ServiceKind::CollabExecute | ServiceKind::CollabResolve => Action::Invoke,
                 ServiceKind::ToolPreflight | ServiceKind::ToolList => Action::List,
@@ -396,7 +391,7 @@ struct ServicePolicyConfig {
     attrs: Option<Value>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 struct ToolBootstrap {
     #[serde(default)]
     registry: ToolRegistryConfig,
@@ -468,18 +463,6 @@ impl SurrealBackendSettings {
     }
 }
 
-impl Default for ToolBootstrap {
-    fn default() -> Self {
-        Self {
-            registry: ToolRegistryConfig::default(),
-            idempotency: IdempotencyBootstrap::default(),
-            events: EventsBootstrap::default(),
-            evidence: EvidenceBootstrap::default(),
-            manifests: Vec::new(),
-        }
-    }
-}
-
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 struct AuthBootstrap {
     #[serde(default)]
@@ -498,16 +481,11 @@ struct StorageBootstrap {
     graph: StorageBackendConfig,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum StorageBackendConfig {
+    #[default]
     Memory,
-}
-
-impl Default for StorageBackendConfig {
-    fn default() -> Self {
-        StorageBackendConfig::Memory
-    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
@@ -656,7 +634,7 @@ impl LlmBootstrap {
     }
 
     fn struct_policy(&self) -> StructOutPolicy {
-        self.struct_out_policy.into_policy()
+        self.struct_out_policy.to_policy()
     }
 
     fn defaults(&self) -> LlmDefaults {
@@ -692,6 +670,7 @@ impl Default for LlmBootstrap {
     }
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum LlmProviderConfig {
@@ -768,7 +747,7 @@ impl LlmProviderConfig {
                 if let Some(rpm) = requests_per_minute {
                     cfg = cfg.with_rate_limit(*rpm);
                 }
-                for (alias, target) in aliases {
+                for (alias, target) in aliases.iter() {
                     cfg = cfg.with_alias(alias.clone(), target.clone());
                 }
                 let factory = OpenAiProviderFactory::new(cfg).map_err(anyhow::Error::new)?;
@@ -779,22 +758,19 @@ impl LlmProviderConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 #[serde(rename_all = "snake_case")]
 enum StructPolicyConfig {
+    #[default]
     Off,
     StrictReject,
-    StrictRepair { max_attempts: u8 },
-}
-
-impl Default for StructPolicyConfig {
-    fn default() -> Self {
-        StructPolicyConfig::Off
-    }
+    StrictRepair {
+        max_attempts: u8,
+    },
 }
 
 impl StructPolicyConfig {
-    fn into_policy(&self) -> StructOutPolicy {
+    fn to_policy(&self) -> StructOutPolicy {
         match self {
             StructPolicyConfig::Off => StructOutPolicy::Off,
             StructPolicyConfig::StrictReject => StructOutPolicy::StrictReject,
@@ -1605,6 +1581,7 @@ impl GatewayAuthStage {
         })
     }
 
+    #[allow(clippy::result_large_err)]
     fn verify_hmac(
         &self,
         spec: &str,
@@ -1731,6 +1708,7 @@ struct ResolvedHmacKey {
 }
 
 impl AuthConfig {
+    #[allow(clippy::result_large_err)]
     fn ensure_scopes(&self, principal: &ResolvedPrincipal) -> Result<(), InterceptError> {
         for scope in &self.scopes {
             if !principal.has_scope(scope) {
@@ -1782,7 +1760,7 @@ impl Stage for GatewaySchemaStage {
             }
         }
 
-        if !schema.required_fields.is_empty() && req.method().to_ascii_uppercase() != "GET" {
+        if !schema.required_fields.is_empty() && !req.method().eq_ignore_ascii_case("GET") {
             let body = req.read_json().await?;
             for field in &schema.required_fields {
                 if body.get(field).is_none() {
@@ -2082,9 +2060,8 @@ impl ToolService {
         call: &ToolCall,
         manifest: &ToolManifest,
     ) -> Result<IdempoDecision, ToolError> {
-        match manifest.idempotency {
-            IdempoKind::None => return Ok(IdempoDecision::Skip),
-            _ => {}
+        if manifest.idempotency == IdempoKind::None {
+            return Ok(IdempoDecision::Skip);
         }
 
         let ctx = match &self.idempotency {
@@ -2097,13 +2074,13 @@ impl ToolService {
         };
 
         let key = match manifest.idempotency {
-            IdempoKind::None => return Ok(IdempoDecision::Skip),
             IdempoKind::Keyed => call
                 .idempotency_key
                 .as_ref()
                 .cloned()
                 .ok_or_else(|| ToolError::schema("idempotency_key required"))?,
             IdempoKind::Global => format!("global::{}", manifest.id.0),
+            IdempoKind::None => unreachable!(),
         };
 
         let hash =
@@ -2156,7 +2133,7 @@ impl ToolService {
                 tool_id: call.tool_id.clone(),
                 call_id: call.call_id.clone(),
                 profile_hash: profile_hash.clone(),
-                args_digest: args_digest,
+                args_digest,
             };
             publisher.emit_begin(begin_event.clone()).await?;
             Some(ToolEventContext {
@@ -2995,7 +2972,6 @@ struct LlmService {
     registry: Arc<Registry>,
     defaults: LlmDefaults,
     struct_out_policy: StructOutPolicy,
-    history: AsyncMutex<Vec<LlmHistoryEntry>>,
 }
 
 impl LlmService {
@@ -3006,7 +2982,6 @@ impl LlmService {
             registry: Arc::new(registry),
             defaults: config.defaults(),
             struct_out_policy: config.struct_policy(),
-            history: AsyncMutex::new(Vec::new()),
         })
     }
 
@@ -3109,16 +3084,6 @@ impl LlmService {
         }
 
         let response_text = message_text(&response.message);
-        {
-            let mut history = self.history.lock().await;
-            history.push(LlmHistoryEntry {
-                tenant: tenant.clone(),
-                prompt: prompt.clone(),
-                response: response_text.clone(),
-                timestamp_ms: now_ms(),
-            });
-        }
-
         Ok(LlmCompleteResponse {
             tenant: tenant.clone(),
             prompt,
@@ -3258,7 +3223,6 @@ impl LlmService {
             tenant: _,
             model,
             normalize,
-            dim: _,
         } = payload;
 
         let model_id = self.embed_model(&model);
@@ -3297,13 +3261,6 @@ impl LlmService {
 
 #[derive(Clone, Debug)]
 #[cfg_attr(not(test), allow(dead_code))]
-struct LlmHistoryEntry {
-    tenant: TenantId,
-    prompt: String,
-    response: String,
-    timestamp_ms: i64,
-}
-
 #[derive(Deserialize)]
 struct GraphRecallPayload {
     #[serde(default)]
@@ -3631,9 +3588,6 @@ struct LlmEmbedPayload {
     model: Option<String>,
     #[serde(default)]
     normalize: bool,
-    #[cfg_attr(not(test), allow(dead_code))]
-    #[serde(default)]
-    dim: Option<u32>,
 }
 
 #[derive(Serialize)]
@@ -4158,6 +4112,91 @@ impl ToolEvidenceStore for InMemoryEvidenceStore {
         self.records.lock().await.clone()
     }
 }
+
+#[cfg(feature = "idempo_surreal")]
+struct SurrealEvidenceStore {
+    datastore: Arc<SurrealDatastore>,
+}
+
+#[cfg(feature = "idempo_surreal")]
+impl SurrealEvidenceStore {
+    fn new(datastore: Arc<SurrealDatastore>) -> Self {
+        Self { datastore }
+    }
+}
+
+#[cfg(feature = "idempo_surreal")]
+#[async_trait]
+impl ToolEvidenceStore for SurrealEvidenceStore {
+    async fn store(
+        &self,
+        tenant: &TenantId,
+        call_id: &Id,
+        evidence: &InvokeEvidence,
+    ) -> Result<(), ToolError> {
+        use serde_json::json;
+
+        let session = self.datastore.session().await.map_err(ToolError::from)?;
+        let payload = json!({
+            "tenant": tenant.0,
+            "call_id": call_id.0,
+            "begins": evidence.begins,
+            "ends": evidence.ends,
+            "updated_at": now_ms(),
+        });
+
+        session
+            .query(
+                "UPSERT tool_evidence CONTENT $data RETURN NONE",
+                json!({ "data": payload }),
+            )
+            .await
+            .map_err(ToolError::from)?;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    async fn snapshot(&self) -> Vec<StoredEvidence> {
+        use serde_json::json;
+
+        let session = match self.datastore.session().await {
+            Ok(session) => session,
+            Err(_) => return Vec::new(),
+        };
+        let outcome = match session
+            .query(
+                "SELECT tenant, call_id, begins, ends FROM tool_evidence",
+                json!({}),
+            )
+            .await
+        {
+            Ok(outcome) => outcome,
+            Err(_) => return Vec::new(),
+        };
+        outcome
+            .rows
+            .into_iter()
+            .filter_map(|row| {
+                let tenant = row.get("tenant")?.as_str()?.to_string();
+                let call_id = row.get("call_id")?.as_str()?.to_string();
+                let begins = row
+                    .get("begins")
+                    .and_then(|v| serde_json::from_value(v.clone()).ok())
+                    .unwrap_or_default();
+                let ends = row
+                    .get("ends")
+                    .and_then(|v| serde_json::from_value(v.clone()).ok())
+                    .unwrap_or_default();
+                Some(StoredEvidence {
+                    tenant: TenantId(tenant),
+                    call_id: Id(call_id),
+                    begins,
+                    ends,
+                })
+            })
+            .collect()
+    }
+}
 fn tool_error_to_intercept(err: ToolError) -> InterceptError {
     InterceptError::from_error(err.into_inner())
 }
@@ -4252,6 +4291,7 @@ async fn shutdown_signal() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use soulbase_auth::prelude::PolicyEffect;
     use soulbase_tools::prelude::{
         CapabilityDecl, ConcurrencyKind, ConsentPolicy, IdempoKind, Limits, SafetyClass, SideEffect,
     };
@@ -4345,63 +4385,6 @@ mod tests {
             },
             idempotency: IdempoKind::None,
             concurrency: ConcurrencyKind::Parallel,
-        }
-    }
-
-    #[cfg(feature = "idempo_surreal")]
-    struct SurrealEvidenceStore {
-        datastore: Arc<SurrealDatastore>,
-    }
-
-    #[cfg(feature = "idempo_surreal")]
-    impl SurrealEvidenceStore {
-        fn new(datastore: Arc<SurrealDatastore>) -> Self {
-            Self { datastore }
-        }
-
-        async fn session(
-            &self,
-        ) -> Result<soulbase_storage::surreal::session::SurrealSession, ToolError> {
-            self.datastore
-                .session()
-                .await
-                .map_err(|err| ToolError::from(err))
-        }
-    }
-
-    #[cfg(feature = "idempo_surreal")]
-    #[async_trait]
-    impl ToolEvidenceStore for SurrealEvidenceStore {
-        async fn store(
-            &self,
-            tenant: &TenantId,
-            call_id: &Id,
-            evidence: &InvokeEvidence,
-        ) -> Result<(), ToolError> {
-            use serde_json::json;
-
-            let session = self.session().await?;
-            let payload = json!({
-                "tenant": tenant.0,
-                "call_id": call_id.0,
-                "begins": evidence.begins,
-                "ends": evidence.ends,
-                "updated_at": now_ms(),
-            });
-
-            session
-                .query(
-                    "UPSERT tool_evidence CONTENT $data RETURN NONE",
-                    json!({ "data": payload }),
-                )
-                .await
-                .map_err(|err| ToolError::unknown(&format!("store evidence: {err}")))?;
-            Ok(())
-        }
-
-        #[cfg(test)]
-        async fn snapshot(&self) -> Vec<StoredEvidence> {
-            Vec::new()
         }
     }
 
@@ -4659,7 +4642,7 @@ mod tests {
         let canonical = format!("POST\n/repo\n{date}");
         let mut mac = HmacSha256::new_from_slice(b"super-secret").unwrap();
         mac.update(canonical.as_bytes());
-        let sig = hex_encode(mac.finalize().into_bytes());
+        let sig = hex::encode(mac.finalize().into_bytes());
         let authz = format!("SB-HMAC local-hmac:{sig}");
 
         let mut cx = InterceptContext::default();
@@ -4799,8 +4782,10 @@ mod tests {
             Arc::new(routes),
             Some(Arc::new(PolicyAuthorizer::new(rules))),
         );
-        let mut cx = InterceptContext::default();
-        cx.subject = Some(sample_subject());
+        let mut cx = InterceptContext {
+            subject: Some(sample_subject()),
+            ..Default::default()
+        };
         let mut req = DummyRequest::new("POST", "/repo");
         let mut rsp = DummyResponse;
         stage
@@ -4837,8 +4822,10 @@ mod tests {
             Arc::new(routes),
             Some(Arc::new(PolicyAuthorizer::new(rules))),
         );
-        let mut cx = InterceptContext::default();
-        cx.subject = Some(sample_subject());
+        let mut cx = InterceptContext {
+            subject: Some(sample_subject()),
+            ..Default::default()
+        };
         let mut req = DummyRequest::new("POST", "/secure");
         let mut rsp = DummyResponse;
         let err = stage

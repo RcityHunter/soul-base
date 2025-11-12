@@ -5496,6 +5496,7 @@ dependencies = [
  "soulbase-sandbox",
  "soulbase-storage",
  "soulbase-tools",
+ "soulbase-tx",
  "soulbase-types",
  "thiserror 1.0.69",
  "tokio",

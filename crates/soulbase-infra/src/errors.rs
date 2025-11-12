@@ -11,72 +11,76 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 #[error("{0:?}")]
-pub struct InfraError(pub ErrorObj);
+pub struct InfraError(pub Box<ErrorObj>);
 
 impl InfraError {
+    pub fn into_inner(self) -> ErrorObj {
+        *self.0
+    }
+
     pub fn config(detail: &str) -> Self {
-        InfraError(
+        InfraError(Box::new(
             ErrorBuilder::new(codes::SCHEMA_VALIDATION)
                 .user_msg("Infrastructure configuration is invalid.")
                 .dev_msg(detail)
                 .build(),
-        )
+        ))
     }
 
     pub fn provider_unavailable(detail: &str) -> Self {
-        InfraError(
+        InfraError(Box::new(
             ErrorBuilder::new(codes::PROVIDER_UNAVAILABLE)
                 .user_msg("External infrastructure is unavailable.")
                 .dev_msg(detail)
                 .build(),
-        )
+        ))
     }
 
     pub fn feature_disabled(feature: &str, detail: &str) -> Self {
-        InfraError(
+        InfraError(Box::new(
             ErrorBuilder::new(codes::SCHEMA_VALIDATION)
                 .user_msg("Required capability is disabled.")
                 .dev_msg(format!("feature '{feature}' is disabled: {detail}"))
                 .build(),
-        )
+        ))
     }
 }
 
 impl From<InfraError> for ErrorObj {
     fn from(value: InfraError) -> Self {
-        value.0
+        *value.0
     }
 }
 
 impl From<ErrorObj> for InfraError {
     fn from(value: ErrorObj) -> Self {
-        InfraError(value)
+        InfraError(Box::new(value))
     }
 }
 
 impl From<ConfigError> for InfraError {
     fn from(err: ConfigError) -> Self {
-        InfraError(err.into_inner())
+        InfraError(Box::new(err.into_inner()))
     }
 }
 
 #[cfg(feature = "redis")]
 impl From<CacheError> for InfraError {
     fn from(err: CacheError) -> Self {
-        InfraError(err.into_inner())
+        InfraError(Box::new(err.into_inner()))
     }
 }
 
 #[cfg(feature = "s3")]
 impl From<BlobError> for InfraError {
     fn from(err: BlobError) -> Self {
-        InfraError(err.into_inner())
+        InfraError(Box::new(err.into_inner()))
     }
 }
 
 #[cfg(feature = "kafka")]
 impl From<TxError> for InfraError {
     fn from(err: TxError) -> Self {
-        InfraError(err.into_inner())
+        InfraError(Box::new(err.into_inner()))
     }
 }

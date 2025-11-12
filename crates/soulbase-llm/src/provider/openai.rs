@@ -1,5 +1,3 @@
-#![cfg(feature = "provider-openai")]
-
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use async_stream::try_stream;
@@ -812,7 +810,6 @@ impl EmbedModel for OpenAiEmbedModel {
             usage: usage_info,
             model,
         } = payload;
-        let mut data = data;
         if data.is_empty() {
             return Err(LlmError::provider_unavailable(
                 "openai returned no embeddings",
@@ -1120,7 +1117,10 @@ fn to_outbound_message(message: &Message) -> Result<OutboundMessage, LlmError> {
     };
 
     let tool_call_id = if role == "tool" {
-        message.tool_calls.get(0).map(|call| call.call_id.0.clone())
+        message
+            .tool_calls
+            .first()
+            .map(|call| call.call_id.0.clone())
     } else {
         None
     };
@@ -1401,7 +1401,7 @@ mod tests {
 
         let cfg = OpenAiConfig::new("test-key")
             .unwrap()
-            .with_base_url(&server.uri())
+            .with_base_url(server.uri())
             .unwrap()
             .with_alias("gpt-4o", "gpt-4o-mini");
         let factory = OpenAiProviderFactory::new(cfg).unwrap();
@@ -1448,7 +1448,7 @@ mod tests {
 
         let cfg = OpenAiConfig::new("key")
             .unwrap()
-            .with_base_url(&server.uri())
+            .with_base_url(server.uri())
             .unwrap();
         let factory = OpenAiProviderFactory::new(cfg).unwrap();
         let model = factory

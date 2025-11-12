@@ -50,7 +50,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let cfg = OpenAiConfig::new(api_key)?
         // 使用别名方便调用时指定模型
-        .with_alias("thin-waist", "gpt-4o-mini")?;
+        .with_alias("thin-waist", "gpt-4o-mini");
     let factory = OpenAiProviderFactory::new(cfg)?;
 
     let mut registry = Registry::new();

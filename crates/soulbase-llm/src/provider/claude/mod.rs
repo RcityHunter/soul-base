@@ -857,7 +857,7 @@ fn build_tool_result_content(message: &Message) -> Result<Vec<RequestContent>, L
         }
     }
 
-    let call = message.tool_calls.get(0).ok_or_else(|| {
+    let call = message.tool_calls.first().ok_or_else(|| {
         LlmError::schema("claude tool result message requires tool_call metadata")
     })?;
 
@@ -1284,7 +1284,7 @@ fn parse_stream_event(event: &str, payload: &str) -> Result<ClaudeStreamEvent, L
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wiremock::matchers::{body_partial_json, header, method, path};
+    use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn sample_request(model_id: &str) -> ChatRequest {
@@ -1353,7 +1353,7 @@ mod tests {
 
         let cfg = ClaudeConfig::new("test-key")
             .unwrap()
-            .with_base_url(&server.uri())
+            .with_base_url(server.uri())
             .unwrap()
             .with_alias("haiku", "claude-3-haiku")
             .with_default_max_tokens(64);

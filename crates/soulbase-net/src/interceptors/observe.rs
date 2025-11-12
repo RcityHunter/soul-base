@@ -101,7 +101,7 @@ impl Interceptor for ObserveInterceptor {
                     request.url.host_str().unwrap_or_default().to_string(),
                 )
                 .field("elapsed_ms", json!(response.elapsed.as_millis()))
-                .finish(ctx, &NoopRedactor::default());
+                .finish(ctx, &NoopRedactor);
             self.logger.log(ctx, event).await;
         }
         Ok(())
@@ -118,7 +118,7 @@ impl Interceptor for ObserveInterceptor {
                 )
                 .field("code", json!(error.0.code.0))
                 .field("message", json!(error.0.message_user))
-                .finish(ctx, &NoopRedactor::default());
+                .finish(ctx, &NoopRedactor);
             self.logger.log(ctx, event).await;
         }
         Ok(())

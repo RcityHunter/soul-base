@@ -245,22 +245,12 @@ impl NetClient for ReqwestClient {
     }
 }
 
+#[derive(Default)]
 pub struct ClientBuilder {
     policy: NetPolicy,
     interceptors: Vec<InterceptorObject>,
     metrics: NetMetrics,
     client: Option<reqwest::Client>,
-}
-
-impl Default for ClientBuilder {
-    fn default() -> Self {
-        Self {
-            policy: NetPolicy::default(),
-            interceptors: Vec::new(),
-            metrics: NetMetrics::default(),
-            client: None,
-        }
-    }
 }
 
 impl ClientBuilder {

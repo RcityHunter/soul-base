@@ -21,17 +21,12 @@ pub struct TimeoutCfg {
     pub write: Option<Duration>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub enum Body {
+    #[default]
     Empty,
     Bytes(Bytes),
     Json(Value),
-}
-
-impl Default for Body {
-    fn default() -> Self {
-        Body::Empty
-    }
 }
 
 impl Body {

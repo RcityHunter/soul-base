@@ -5,6 +5,7 @@ use soulbase_storage::spi::migrate::MigrationScript;
 use soulbase_storage::surreal::{
     schema_migrations, SurrealConfig, SurrealDatastore, SurrealMigrator,
 };
+use soulbase_storage::Migrator;
 use soulbase_storage::StorageError;
 use std::collections::HashSet;
 

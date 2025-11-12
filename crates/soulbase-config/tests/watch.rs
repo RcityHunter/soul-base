@@ -32,10 +32,10 @@ impl SecretResolver for ToggleSecretResolver {
             let next = self.hits.fetch_add(1, Ordering::SeqCst) + 1;
             Ok(serde_json::Value::String(format!("resolved-{next}")))
         } else {
-            Err(ConfigError::from(errors::io_provider_unavailable(
+            Err(errors::io_provider_unavailable(
                 "secret.toggle",
                 "resolver disabled",
-            )))
+            ))
         }
     }
 }
@@ -49,7 +49,7 @@ async fn sources_emit_changes_and_loader_hot_swaps() {
     {
         let mut guard = remote_state.lock();
         access::set_path(
-            &mut *guard,
+            &mut guard,
             "app.version",
             serde_json::Value::String("1".into()),
         );
@@ -100,7 +100,7 @@ async fn sources_emit_changes_and_loader_hot_swaps() {
     {
         let mut guard = remote_state.lock();
         access::set_path(
-            &mut *guard,
+            &mut guard,
             "app.version",
             serde_json::Value::String("2".into()),
         );
@@ -266,9 +266,7 @@ async fn remote_source_failure_preserves_last_snapshot() {
                 (guard.fail, guard.version.clone())
             };
             if fail {
-                Err(ConfigError::from(errors::io_provider_unavailable(
-                    "remote", "disabled",
-                )))
+                Err(errors::io_provider_unavailable("remote", "disabled"))
             } else {
                 let mut map = serde_json::Map::new();
                 access::set_path(&mut map, "app.version", serde_json::Value::String(version));

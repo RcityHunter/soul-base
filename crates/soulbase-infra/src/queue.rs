@@ -100,11 +100,14 @@ impl KafkaTransport {
         }
 
         let mut client_config = ClientConfig::new();
+        let brokers = cfg.brokers.join(",");
+        let linger_ms = cfg.linger_ms.to_string();
+        let delivery_timeout_ms = cfg.delivery_timeout_ms.to_string();
         client_config
-            .set("bootstrap.servers", &cfg.brokers.join(","))
-            .set("linger.ms", &cfg.linger_ms.to_string())
+            .set("bootstrap.servers", brokers)
+            .set("linger.ms", linger_ms)
             .set("acks", &cfg.acks)
-            .set("message.timeout.ms", &cfg.delivery_timeout_ms.to_string());
+            .set("message.timeout.ms", delivery_timeout_ms);
 
         if let Some(security) = cfg.security.as_ref() {
             if let Some(protocol) = &security.security_protocol {

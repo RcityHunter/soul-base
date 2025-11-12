@@ -23,7 +23,7 @@ use chrono::Utc;
 use std::time::Instant;
 
 #[cfg(feature = "observe")]
-use crate::observe::{ctx_for_tool, log_invocation};
+use crate::observe::{ctx_for_tool, log_invocation, LogInvocationParams};
 #[cfg(feature = "observe")]
 use soulbase_observe::prelude::{Logger, Meter, MeterRegistry, MetricKind, MetricSpec};
 #[cfg(feature = "outbox")]
@@ -110,7 +110,7 @@ impl InvokerImpl {
             #[cfg(feature = "observe")]
             meter: Arc::new(MeterRegistry::default()),
             #[cfg(feature = "observe")]
-            logger: Arc::new(soulbase_observe::prelude::NoopLogger::default()),
+            logger: Arc::new(soulbase_observe::prelude::NoopLogger),
         }
     }
 
@@ -242,12 +242,14 @@ impl Invoker for InvokerImpl {
                         log_invocation(
                             self.logger.as_ref(),
                             &ctx,
-                            &request.call.tenant.0,
-                            &request.spec.manifest.id,
-                            "error",
-                            Some(err.0.code.0),
-                            latency_ms,
-                            None,
+                            LogInvocationParams {
+                                tenant: &request.call.tenant.0,
+                                tool: &request.spec.manifest.id,
+                                status: "error",
+                                code: Some(err.0.code.0),
+                                latency_ms,
+                                degradation: None,
+                            },
                         )
                         .await;
                     }
@@ -313,12 +315,14 @@ impl Invoker for InvokerImpl {
             log_invocation(
                 self.logger.as_ref(),
                 &ctx,
-                &request.call.tenant.0,
-                &request.spec.manifest.id,
-                status,
-                None,
-                latency_ms,
-                degradation.as_deref(),
+                LogInvocationParams {
+                    tenant: &request.call.tenant.0,
+                    tool: &request.spec.manifest.id,
+                    status,
+                    code: None,
+                    latency_ms,
+                    degradation: degradation.as_deref(),
+                },
             )
             .await;
         }

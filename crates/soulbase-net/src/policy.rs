@@ -4,7 +4,7 @@ use std::time::Duration;
 use http::StatusCode;
 use url::Url;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct NetPolicy {
     pub retry: RetryPolicy,
     pub backoff: BackoffCfg,
@@ -17,24 +17,6 @@ pub struct NetPolicy {
     pub limits: LimitsPolicy,
     pub cache_hook: CacheHookPolicy,
     pub error_map: ErrorMapPolicy,
-}
-
-impl Default for NetPolicy {
-    fn default() -> Self {
-        Self {
-            retry: RetryPolicy::default(),
-            backoff: BackoffCfg::default(),
-            cbreaker: CircuitBreakerPolicy::default(),
-            redirect: RedirectPolicy::default(),
-            tls: TlsPolicy::default(),
-            dns: DnsPolicy::default(),
-            proxy: ProxyPolicy::default(),
-            security: SecurityPolicy::default(),
-            limits: LimitsPolicy::default(),
-            cache_hook: CacheHookPolicy::default(),
-            error_map: ErrorMapPolicy::default(),
-        }
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -196,19 +178,10 @@ impl Default for SecurityPolicy {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct LimitsPolicy {
     pub max_response_bytes: Option<usize>,
     pub max_body_bytes: Option<usize>,
-}
-
-impl Default for LimitsPolicy {
-    fn default() -> Self {
-        Self {
-            max_response_bytes: None,
-            max_body_bytes: None,
-        }
-    }
 }
 
 #[derive(Clone, Debug, Default)]

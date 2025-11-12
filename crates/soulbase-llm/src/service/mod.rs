@@ -69,14 +69,14 @@ use soulbase_storage::surreal::{
     TABLE_LLM_TOOL_PLAN,
 };
 use soulbase_storage::Migrator;
-use soulbase_storage::{Datastore, QueryExecutor};
+use soulbase_storage::{Datastore, QueryExecutor, QueryStats};
 use soulbase_tx::prelude::SurrealTxStores;
 
 use crate::prelude::*;
 #[cfg(feature = "provider-claude")]
-use crate::{ClaudeConfig, ClaudeProviderFactory};
+use crate::provider::{ClaudeConfig, ClaudeProviderFactory};
 #[cfg(feature = "provider-gemini")]
-use crate::{GeminiConfig, GeminiProviderFactory};
+use crate::provider::{GeminiConfig, GeminiProviderFactory};
 use crate::{LocalProviderFactory, Registry};
 #[cfg(feature = "provider-openai")]
 use crate::{OpenAiConfig, OpenAiProviderFactory};
@@ -97,8 +97,6 @@ pub struct AppState {
     tool_invoker: Arc<dyn Invoker>,
     explain_store: Arc<dyn ExplainStore>,
     observe: Arc<ObserveSystem>,
-    runtime: Arc<RuntimeConfig>,
-    infra: Arc<InfraManager>,
 }
 
 #[async_trait]
@@ -118,10 +116,13 @@ trait PlanStore: Send + Sync {
     async fn remove(&self, tenant: &TenantId, key: &str) -> Result<bool, LlmError>;
 }
 
+type PlanStoreKey = (String, String);
+type PlanStoreInner = HashMap<PlanStoreKey, Vec<ToolCallProposal>>;
+
 #[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone, Default)]
 struct MemoryPlanStore {
-    inner: Arc<Mutex<HashMap<(String, String), Vec<ToolCallProposal>>>>,
+    inner: Arc<Mutex<PlanStoreInner>>,
 }
 
 #[async_trait]
@@ -195,13 +196,6 @@ impl MemoryPlanStore {
             .ok()
             .and_then(|guard| guard.get(&(tenant.0.clone(), key.to_string())).cloned())
     }
-
-    fn remove_sync(&self, tenant: &TenantId, key: &str) -> bool {
-        self.inner
-            .lock()
-            .map(|mut guard| guard.remove(&(tenant.0.clone(), key.to_string())).is_some())
-            .unwrap_or(false)
-    }
 }
 
 struct SurrealPlanStore {
@@ -266,7 +260,7 @@ impl PlanStore for SurrealPlanStore {
         key: &str,
     ) -> Result<Option<Vec<ToolCallProposal>>, LlmError> {
         let session = self.session().await?;
-        let value = session
+        let outcome = session
             .query(
                 "SELECT steps FROM llm_tool_plan WHERE tenant = $tenant AND plan_id = $plan LIMIT 1",
                 json!({
@@ -276,28 +270,20 @@ impl PlanStore for SurrealPlanStore {
             )
             .await
             .map_err(|err| LlmError::unknown(&format!("load tool plan: {err}")))?;
-        match value {
-            serde_json::Value::Array(mut rows) => {
-                if let Some(serde_json::Value::Object(row)) = rows.pop() {
-                    if let Some(steps) = row.get("steps") {
-                        let plan: Vec<ToolCallProposal> = serde_json::from_value(steps.clone())
-                            .map_err(|err| {
-                                LlmError::unknown(&format!("decode tool plan steps: {err}"))
-                            })?;
-                        return Ok(Some(plan));
-                    }
-                }
-                Ok(None)
+        let mut rows = outcome.rows;
+        if let Some(serde_json::Value::Object(row)) = rows.pop() {
+            if let Some(steps) = row.get("steps") {
+                let plan: Vec<ToolCallProposal> = serde_json::from_value(steps.clone())
+                    .map_err(|err| LlmError::unknown(&format!("decode tool plan steps: {err}")))?;
+                return Ok(Some(plan));
             }
-            other => Err(LlmError::unknown(&format!(
-                "unexpected plan fetch response: {other}"
-            ))),
         }
+        Ok(None)
     }
 
     async fn list(&self, tenant: &TenantId) -> Result<Vec<PlanSummary>, LlmError> {
         let session = self.session().await?;
-        let value = session
+        let outcome = session
             .query(
                 "SELECT plan_id, step_count FROM llm_tool_plan WHERE tenant = $tenant ORDER BY updated_at DESC",
                 json!({
@@ -306,34 +292,28 @@ impl PlanStore for SurrealPlanStore {
             )
             .await
             .map_err(|err| LlmError::unknown(&format!("list tool plans: {err}")))?;
-        match value {
-            serde_json::Value::Array(rows) => {
-                let mut out = Vec::with_capacity(rows.len());
-                for row in rows {
-                    if let serde_json::Value::Object(map) = row {
-                        if let (Some(plan_id), Some(step_count)) =
-                            (map.get("plan_id"), map.get("step_count"))
-                        {
-                            let plan_id = plan_id.as_str().unwrap_or_default().to_string();
-                            let step_count = step_count.as_u64().unwrap_or_default() as u32;
-                            out.push(PlanSummary {
-                                plan_id,
-                                step_count,
-                            });
-                        }
-                    }
+        let rows = outcome.rows;
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows {
+            if let serde_json::Value::Object(map) = row {
+                if let (Some(plan_id), Some(step_count)) =
+                    (map.get("plan_id"), map.get("step_count"))
+                {
+                    let plan_id = plan_id.as_str().unwrap_or_default().to_string();
+                    let step_count = step_count.as_u64().unwrap_or_default() as u32;
+                    out.push(PlanSummary {
+                        plan_id,
+                        step_count,
+                    });
                 }
-                Ok(out)
             }
-            other => Err(LlmError::unknown(&format!(
-                "unexpected plan list response: {other}"
-            ))),
         }
+        Ok(out)
     }
 
     async fn remove(&self, tenant: &TenantId, key: &str) -> Result<bool, LlmError> {
         let session = self.session().await?;
-        let value = session
+        let outcome = session
             .query(
                 "DELETE type::thing($table, $id) RETURN BEFORE",
                 json!({
@@ -343,12 +323,7 @@ impl PlanStore for SurrealPlanStore {
             )
             .await
             .map_err(|err| LlmError::unknown(&format!("delete tool plan: {err}")))?;
-        match value {
-            serde_json::Value::Array(rows) => Ok(!rows.is_empty()),
-            other => Err(LlmError::unknown(&format!(
-                "unexpected plan delete response: {other}"
-            ))),
-        }
+        Ok(!outcome.rows.is_empty())
     }
 }
 
@@ -475,7 +450,7 @@ impl ExplainStore for SurrealExplainStore {
 
     async fn get(&self, explain_id: &str) -> Result<Option<ExplainRecord>, LlmError> {
         let session = self.session().await?;
-        let value = session
+        let outcome = session
             .query(
                 "SELECT explain_id, provider, fingerprint, plan_id, metadata, created_at, tenant \
                  FROM llm_explain WHERE explain_id = $explain LIMIT 1",
@@ -483,61 +458,53 @@ impl ExplainStore for SurrealExplainStore {
             )
             .await
             .map_err(|err| LlmError::unknown(&format!("load explain record: {err}")))?;
-        match value {
-            serde_json::Value::Array(mut rows) => {
-                if let Some(serde_json::Value::Object(map)) = rows.pop() {
-                    let explain_id = map
-                        .get("explain_id")
-                        .and_then(|v| v.as_str())
-                        .ok_or_else(|| LlmError::unknown("explain record missing id"))?
-                        .to_string();
-                    let provider = map
-                        .get("provider")
-                        .and_then(|v| v.as_str())
-                        .ok_or_else(|| LlmError::unknown("explain record missing provider"))?
-                        .to_string();
-                    let fingerprint = map
-                        .get("fingerprint")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string());
-                    let plan_id = map
-                        .get("plan_id")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string());
-                    let metadata = map
-                        .get("metadata")
-                        .cloned()
-                        .unwrap_or_else(|| serde_json::Value::Object(Default::default()));
-                    let tenant = map
-                        .get("tenant")
-                        .and_then(|v| v.as_str())
-                        .ok_or_else(|| LlmError::unknown("explain record missing tenant"))?;
-                    let created_at_str = map
-                        .get("created_at")
-                        .and_then(|v| v.as_str())
-                        .ok_or_else(|| LlmError::unknown("explain record missing timestamp"))?;
-                    let created_at = chrono::DateTime::parse_from_rfc3339(created_at_str)
-                        .map_err(|err| {
-                            LlmError::unknown(&format!("parse explain timestamp: {err}"))
-                        })?
-                        .with_timezone(&Utc);
+        let mut rows = outcome.rows;
+        if let Some(serde_json::Value::Object(map)) = rows.pop() {
+            let explain_id = map
+                .get("explain_id")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| LlmError::unknown("explain record missing id"))?
+                .to_string();
+            let provider = map
+                .get("provider")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| LlmError::unknown("explain record missing provider"))?
+                .to_string();
+            let fingerprint = map
+                .get("fingerprint")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            let plan_id = map
+                .get("plan_id")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            let metadata = map
+                .get("metadata")
+                .cloned()
+                .unwrap_or_else(|| serde_json::Value::Object(Default::default()));
+            let tenant = map
+                .get("tenant")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| LlmError::unknown("explain record missing tenant"))?;
+            let created_at_str = map
+                .get("created_at")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| LlmError::unknown("explain record missing timestamp"))?;
+            let created_at = chrono::DateTime::parse_from_rfc3339(created_at_str)
+                .map_err(|err| LlmError::unknown(&format!("parse explain timestamp: {err}")))?;
+            let created_at = created_at.with_timezone(&Utc);
 
-                    Ok(Some(ExplainRecord {
-                        explain_id,
-                        provider,
-                        fingerprint,
-                        tenant: TenantId(tenant.to_string()),
-                        plan_id,
-                        created_at,
-                        metadata,
-                    }))
-                } else {
-                    Ok(None)
-                }
-            }
-            other => Err(LlmError::unknown(&format!(
-                "unexpected explain fetch response: {other}"
-            ))),
+            Ok(Some(ExplainRecord {
+                explain_id,
+                provider,
+                fingerprint,
+                tenant: TenantId(tenant.to_string()),
+                plan_id,
+                created_at,
+                metadata,
+            }))
+        } else {
+            Ok(None)
         }
     }
 }
@@ -1039,7 +1006,7 @@ async fn record_chat_usage(
         if let Some(cached) = usage.cached_tokens {
             builder = builder.field("cached_tokens", json!(cached));
         }
-        let event = builder.finish(&ctx, &NoopRedactor::default());
+        let event = builder.finish(&ctx, &NoopRedactor);
         logger.log(&ctx, event).await;
     }
 }
@@ -1053,7 +1020,7 @@ async fn log_query_degradation(
         if let Some(reason) = stats.degradation_reason.as_ref() {
             let ctx = match telemetry_to_ctx(telemetry) {
                 Some(ctx) => ctx,
-                None => ObserveCtx::for_tenant("unknown".into()),
+                None => ObserveCtx::for_tenant("unknown"),
             };
             let indices = stats
                 .indices_used
@@ -1064,7 +1031,7 @@ async fn log_query_degradation(
                 .field("reason", json!(reason))
                 .field("full_scan", json!(stats.full_scan))
                 .field("indices", indices)
-                .finish(&ctx, &NoopRedactor::default());
+                .finish(&ctx, &NoopRedactor);
             logger.log(&ctx, event).await;
         }
     }
@@ -1110,7 +1077,7 @@ async fn record_embed_usage(
             .field("items", json!(item_count))
             .field("input_tokens", json!(usage.input_tokens))
             .field("requests", json!(usage.requests))
-            .finish(&ctx, &NoopRedactor::default());
+            .finish(&ctx, &NoopRedactor);
         logger.log(&ctx, event).await;
     }
 }
@@ -1155,7 +1122,7 @@ async fn record_rerank_usage(
             .field("candidates", json!(candidate_count))
             .field("input_tokens", json!(usage.input_tokens))
             .field("output_tokens", json!(usage.output_tokens))
-            .finish(&ctx, &NoopRedactor::default());
+            .finish(&ctx, &NoopRedactor);
         logger.log(&ctx, event).await;
     }
 }
@@ -1181,16 +1148,16 @@ fn build_tooling(
     let sandbox = Sandbox::minimal().with_telemetry(meter.clone(), logger.clone());
     let policy = PolicyConfig::default();
     let stores = SurrealTxStores::new(datastore);
-    let outbox_store = Arc::new(stores.outbox());
-    let dead_store = Arc::new(stores.dead());
+    let outbox_store = stores.outbox();
+    let dead_store = stores.dead();
     let dispatcher = Arc::new(OutboxDispatcher::new(
         infra,
         outbox_store.clone(),
-        dead_store,
+        dead_store.clone(),
     ));
     let invoker_impl = InvokerImpl::new(tool_registry.clone(), facade, sandbox, policy)
         .with_observe(meter, logger)
-        .with_outbox(outbox_store.clone());
+        .with_outbox(Arc::new(outbox_store.clone()));
     let invoker_impl = Arc::new(invoker_impl);
     let tool_invoker: Arc<dyn Invoker> =
         Arc::new(OutboxInvoker::new(invoker_impl.clone(), dispatcher));
@@ -1204,8 +1171,6 @@ fn create_app_state(
     explain_store: Arc<dyn ExplainStore>,
     observe: Arc<ObserveSystem>,
     chain: InterceptorChain,
-    runtime: Arc<RuntimeConfig>,
-    infra: Arc<InfraManager>,
 ) -> AppState {
     let mut registry = Registry::new();
     install_providers(&mut registry);
@@ -1224,8 +1189,6 @@ fn create_app_state(
         tool_invoker,
         explain_store,
         observe,
-        runtime,
-        infra,
     }
 }
 
@@ -1264,7 +1227,7 @@ pub fn build_router(state: AppState) -> Router {
 }
 
 pub async fn default_state(
-    runtime: Arc<RuntimeConfig>,
+    _runtime: Arc<RuntimeConfig>,
     infra: Arc<InfraManager>,
 ) -> anyhow::Result<AppState> {
     let datastore = init_surreal_datastore().await?;
@@ -1291,8 +1254,6 @@ pub async fn default_state(
         explain_store,
         observe,
         chain,
-        runtime,
-        infra,
     ))
 }
 
@@ -1366,7 +1327,7 @@ async fn chat_handler(State(state): State<AppState>, req: Request<Body>) -> Resp
                 "sync",
             )
             .await;
-            log_query_degradation(&logger, &telemetry, &response.usage.plan_meta).await;
+            log_query_degradation(&logger, &telemetry, &None).await;
             if let Some(ref tenant_id) = telemetry.tenant {
                 let tenant = TenantId(tenant_id.to_string());
                 record_tool_plan(
@@ -1452,7 +1413,7 @@ async fn embed_handler(State(state): State<AppState>, req: Request<Body>) -> Res
                 item_count,
             )
             .await;
-            log_query_degradation(&logger, &telemetry, &response.usage.plan_meta).await;
+            log_query_degradation(&logger, &telemetry, &None).await;
 
             serde_json::to_value(response)
                 .map_err(|err| InterceptError::internal(&format!("encode response: {err}")))
@@ -2217,7 +2178,7 @@ fn install_providers(registry: &mut Registry) {
                 cfg = cfg.with_alias("thin-waist", "gpt-4o-mini");
             }
 
-            if let Ok(rpm) = std::env::var("OPENAI_RATE_LIMIT_RPM")
+            if let Some(rpm) = std::env::var("OPENAI_RATE_LIMIT_RPM")
                 .ok()
                 .and_then(|v| v.parse::<u32>().ok())
             {
@@ -2278,21 +2239,21 @@ fn install_providers(registry: &mut Registry) {
                 }
             }
 
-            if let Ok(default_tokens) = std::env::var("CLAUDE_DEFAULT_MAX_TOKENS")
+            if let Some(default_tokens) = std::env::var("CLAUDE_DEFAULT_MAX_TOKENS")
                 .ok()
                 .and_then(|v| v.parse::<u32>().ok())
             {
                 cfg = cfg.with_default_max_tokens(default_tokens);
             }
 
-            if let Ok(concurrency) = std::env::var("CLAUDE_MAX_CONCURRENCY")
+            if let Some(concurrency) = std::env::var("CLAUDE_MAX_CONCURRENCY")
                 .ok()
                 .and_then(|v| v.parse::<usize>().ok())
             {
                 cfg = cfg.with_max_concurrency(concurrency);
             }
 
-            if let Ok(rpm) = std::env::var("ANTHROPIC_RATE_LIMIT_RPM")
+            if let Some(rpm) = std::env::var("ANTHROPIC_RATE_LIMIT_RPM")
                 .ok()
                 .and_then(|v| v.parse::<u32>().ok())
             {
@@ -2354,14 +2315,14 @@ fn install_providers(registry: &mut Registry) {
                 cfg = cfg.with_version(version);
             }
 
-            if let Ok(timeout_ms) = std::env::var("GEMINI_TIMEOUT_MS")
+            if let Some(timeout_ms) = std::env::var("GEMINI_TIMEOUT_MS")
                 .ok()
                 .and_then(|v| v.parse::<u64>().ok())
             {
                 cfg = cfg.with_timeout(Duration::from_millis(timeout_ms));
             }
 
-            if let Ok(concurrency) = std::env::var("GEMINI_MAX_CONCURRENCY")
+            if let Some(concurrency) = std::env::var("GEMINI_MAX_CONCURRENCY")
                 .ok()
                 .and_then(|v| v.parse::<usize>().ok())
             {
@@ -2665,7 +2626,7 @@ mod tests {
         let vectors = json["vectors"].as_array().expect("vectors array");
         assert_eq!(vectors.len(), 2);
         assert_eq!(
-            vectors.get(0).and_then(|v| v.as_array()).map(|v| v.len()),
+            vectors.first().and_then(|v| v.as_array()).map(|v| v.len()),
             Some(8)
         );
     }

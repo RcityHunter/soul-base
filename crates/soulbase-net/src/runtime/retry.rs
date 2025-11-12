@@ -41,3 +41,9 @@ impl RetryState {
         Some(delay)
     }
 }
+
+impl Default for RetryState {
+    fn default() -> Self {
+        Self::new()
+    }
+}

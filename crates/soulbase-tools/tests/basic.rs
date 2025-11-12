@@ -217,12 +217,14 @@ async fn register_preflight_and_invoke_tools() {
 
 #[derive(Clone)]
 struct SpyQuota {
-    records: Arc<Mutex<Vec<(QuotaKey, u64)>>>,
+    records: QuotaRecords,
     outcome: QuotaOutcome,
 }
 
+type QuotaRecords = Arc<Mutex<Vec<(QuotaKey, u64)>>>;
+
 impl SpyQuota {
-    fn with_outcome(outcome: QuotaOutcome) -> (Self, Arc<Mutex<Vec<(QuotaKey, u64)>>>) {
+    fn with_outcome(outcome: QuotaOutcome) -> (Self, QuotaRecords) {
         let records = Arc::new(Mutex::new(Vec::new()));
         (
             SpyQuota {

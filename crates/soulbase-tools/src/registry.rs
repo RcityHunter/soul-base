@@ -421,7 +421,7 @@ fn value_to_state(value: serde_json::Value) -> Result<ToolState, ToolError> {
         .and_then(|v| v.as_i64())
         .unwrap_or_else(|| Utc::now().timestamp_millis());
     let updated_at =
-        chrono::DateTime::<Utc>::from_timestamp_millis(updated_at_ms).unwrap_or_else(|| Utc::now());
+        chrono::DateTime::<Utc>::from_timestamp_millis(updated_at_ms).unwrap_or_else(Utc::now);
 
     Ok(ToolState {
         manifest,

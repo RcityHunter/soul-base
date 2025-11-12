@@ -8,8 +8,6 @@ use crate::config::{self, BlobBackendKind, BlobInfraConfig, FsBlobConfig};
 use crate::errors::InfraError;
 
 #[cfg(feature = "s3")]
-use crate::config::S3BlobConfig;
-#[cfg(feature = "s3")]
 use aws_sdk_s3::config::Region;
 #[cfg(feature = "s3")]
 use aws_sdk_s3::Client as S3Client;

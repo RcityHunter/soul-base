@@ -1,9 +1,10 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use soulbase_config::prelude::InfraNamespace;
 use soulbase_infra::{
     build_blob_store_for, build_cache_for, build_queue_for, BlobHandle, CacheHandle, InfraError,
-    InfraNamespace, QueueHandle,
+    QueueHandle,
 };
 use soulbase_types::tenant::TenantId;
 use tokio::sync::RwLock;
@@ -27,13 +28,7 @@ impl InfraManager {
     }
 
     pub async fn cache_for(&self, tenant: &TenantId) -> Result<CacheHandle, InfraError> {
-        if let Some(existing) = self
-            .caches
-            .read()
-            .await
-            .get(&tenant.0)
-            .map(|handle| handle.clone())
-        {
+        if let Some(existing) = self.caches.read().await.get(&tenant.0).cloned() {
             return Ok(existing);
         }
 
@@ -47,13 +42,7 @@ impl InfraManager {
     }
 
     pub async fn blob_for(&self, tenant: &TenantId) -> Result<BlobHandle, InfraError> {
-        if let Some(existing) = self
-            .blobs
-            .read()
-            .await
-            .get(&tenant.0)
-            .map(|handle| handle.clone())
-        {
+        if let Some(existing) = self.blobs.read().await.get(&tenant.0).cloned() {
             return Ok(existing);
         }
 
@@ -67,13 +56,7 @@ impl InfraManager {
     }
 
     pub async fn queue_for(&self, tenant: &TenantId) -> Result<QueueHandle, InfraError> {
-        if let Some(existing) = self
-            .queues
-            .read()
-            .await
-            .get(&tenant.0)
-            .map(|handle| handle.clone())
-        {
+        if let Some(existing) = self.queues.read().await.get(&tenant.0).cloned() {
             return Ok(existing);
         }
 

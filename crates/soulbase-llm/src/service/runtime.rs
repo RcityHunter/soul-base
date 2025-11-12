@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use anyhow::{anyhow, Context, Result};
 use soulbase_config::prelude::{
     bootstrap_catalog, validator_as_trait, ConfigSnapshot, InfraNamespace, LlmNamespace, Loader,
-    LoaderBuilder, NamespaceId,
+    NamespaceId,
 };
 use soulbase_infra::config as infra_cfg;
 
@@ -38,7 +38,7 @@ pub async fn load_runtime_config() -> Result<RuntimeConfig> {
     let llm = decode_namespace::<LlmNamespace>(&snapshot, "llm").context("decode llm namespace")?;
 
     let infra = infra_cfg::load(&snapshot)
-        .map_err(|err| anyhow!(err.0))
+        .map_err(|err| anyhow!(err))
         .context("decode infra namespace")?;
 
     Ok(RuntimeConfig {
@@ -53,7 +53,7 @@ fn config_paths_from_env() -> Option<Vec<PathBuf>> {
         .or_else(|_| std::env::var("LLM_CONFIG_FILE"))
         .ok()?;
     let paths: Vec<PathBuf> = raw
-        .split(|c| c == ';' || c == ',')
+        .split([';', ','])
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
         .map(PathBuf::from)

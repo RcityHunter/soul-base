@@ -79,9 +79,11 @@ async fn retry_succeeds_on_5xx_then_ok() {
         .build()
         .expect("client");
 
-    let mut request = NetRequest::default();
-    request.method = http::Method::GET;
-    request.url = Url::parse("http://127.0.0.1:18080/ok").unwrap();
+    let request = NetRequest {
+        method: http::Method::GET,
+        url: Url::parse("http://127.0.0.1:18080/ok").unwrap(),
+        ..Default::default()
+    };
 
     let response = client.send(request).await.expect("retry success");
     assert_eq!(response.status, StatusCode::OK);
@@ -117,16 +119,20 @@ async fn circuit_breaker_opens_after_failures() {
         .expect("client");
 
     for _ in 0..3 {
-        let mut request = NetRequest::default();
-        request.method = http::Method::GET;
-        request.url = Url::parse("http://127.0.0.1:18081/fail").unwrap();
-        let _ = client.send(request).await.err().expect("failure expected");
+        let request = NetRequest {
+            method: http::Method::GET,
+            url: Url::parse("http://127.0.0.1:18081/fail").unwrap(),
+            ..Default::default()
+        };
+        let _ = client.send(request).await.expect_err("failure expected");
     }
 
-    let mut request = NetRequest::default();
-    request.method = http::Method::GET;
-    request.url = Url::parse("http://127.0.0.1:18081/fail").unwrap();
-    let err = client.send(request).await.err().expect("circuit open");
+    let request = NetRequest {
+        method: http::Method::GET,
+        url: Url::parse("http://127.0.0.1:18081/fail").unwrap(),
+        ..Default::default()
+    };
+    let err = client.send(request).await.expect_err("circuit open");
     assert!(format!("{err}").contains("Upstream unavailable"));
 }
 
@@ -142,9 +148,11 @@ async fn sandbox_guard_denies_private_when_not_allowed() {
         .build()
         .expect("client");
 
-    let mut request = NetRequest::default();
-    request.method = http::Method::GET;
-    request.url = Url::parse("http://127.0.0.1:1/").unwrap();
-    let err = client.send(request).await.err().expect("sandbox blocked");
+    let request = NetRequest {
+        method: http::Method::GET,
+        url: Url::parse("http://127.0.0.1:1/").unwrap(),
+        ..Default::default()
+    };
+    let err = client.send(request).await.expect_err("sandbox blocked");
     assert!(format!("{err}").contains("private network"));
 }

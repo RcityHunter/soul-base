@@ -328,6 +328,7 @@ struct FunctionCallPayload {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 struct FunctionResponsePayload {
     name: String,
     #[serde(default)]
@@ -596,7 +597,7 @@ fn build_tool_parts(message: &Message) -> Result<Vec<ContentPart>, LlmError> {
         })
         .unwrap_or_default();
 
-    let call = message.tool_calls.get(0).ok_or_else(|| {
+    let call = message.tool_calls.first().ok_or_else(|| {
         LlmError::schema("gemini tool result message requires tool call metadata")
     })?;
 
