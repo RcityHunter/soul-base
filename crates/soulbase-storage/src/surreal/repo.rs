@@ -449,6 +449,45 @@ where
             .await?;
         Ok(())
     }
+
+    async fn upsert_or_create(
+        &self,
+        tenant: &TenantId,
+        id: &str,
+        patch: Value,
+    ) -> Result<(), StorageError> {
+        // Check if record exists
+        if self.get(tenant, id).await?.is_some() {
+            // Record exists, update it
+            self.upsert(tenant, id, patch, None).await.map(|_| ())
+        } else {
+            // Record doesn't exist, create it
+            // Use patch as content for creation
+            let mut content = match patch {
+                Value::Object(map) => map,
+                _ => return Err(StorageError::bad_request("patch must be an object")),
+            };
+
+            // Ensure tenant field is set correctly
+            content.insert("tenant".into(), Value::String(tenant.0.clone()));
+
+            let key = self.record_key(id);
+            let statement = r#"
+                CREATE type::thing($table, $key) CONTENT $data RETURN NONE;
+            "#;
+            let _ = self
+                .run_query(
+                    statement,
+                    json!({
+                        "table": self.table,
+                        "key": key,
+                        "data": Value::Object(content),
+                    }),
+                )
+                .await?;
+            Ok(())
+        }
+    }
 }
 
 pub type TimelineEventRepo = SurrealRepository<TimelineEvent>;

@@ -134,4 +134,14 @@ where
             .ok_or_else(|| StorageError::not_found("entity not found"))?;
         Ok(())
     }
+
+    async fn upsert_or_create(
+        &self,
+        tenant: &TenantId,
+        id: &str,
+        patch: Value,
+    ) -> Result<(), StorageError> {
+        // In-memory implementation's upsert already handles create-or-update
+        self.upsert(tenant, id, patch, None).await.map(|_| ())
+    }
 }

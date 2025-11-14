@@ -39,6 +39,34 @@ impl Default for QueryParams {
     }
 }
 
+/// Sort direction for query results (backward compatibility)
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Sort {
+    pub field: String,
+    pub descending: bool,
+}
+
+impl Sort {
+    pub fn ascending(field: impl Into<String>) -> Self {
+        Self {
+            field: field.into(),
+            descending: false,
+        }
+    }
+
+    pub fn descending(field: impl Into<String>) -> Self {
+        Self {
+            field: field.into(),
+            descending: true,
+        }
+    }
+}
+
+/// Build a record ID from table, tenant, and suffix (backward compatibility)
+pub fn make_record_id(table: &str, tenant: &TenantId, suffix: &str) -> String {
+    format!("{}:{}:{}", table, tenant.0, suffix)
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MigrationVersion {
     pub version: String,

@@ -5,6 +5,10 @@ pub struct SurrealConfig {
     pub database: String,
     pub username: Option<String>,
     pub password: Option<String>,
+    /// Connection pool size (currently not used, kept for backward compatibility)
+    pub pool_size: Option<usize>,
+    /// Strict mode flag (currently not used, kept for backward compatibility)
+    pub strict_mode: Option<bool>,
 }
 
 impl Default for SurrealConfig {
@@ -15,6 +19,8 @@ impl Default for SurrealConfig {
             database: "default".to_string(),
             username: None,
             password: None,
+            pool_size: None,
+            strict_mode: None,
         }
     }
 }
@@ -31,6 +37,8 @@ impl SurrealConfig {
             database: database.into(),
             username: None,
             password: None,
+            pool_size: None,
+            strict_mode: None,
         }
     }
 
@@ -41,6 +49,18 @@ impl SurrealConfig {
     ) -> Self {
         self.username = Some(username.into());
         self.password = Some(password.into());
+        self
+    }
+
+    /// Configure connection pool size (backward compatibility - currently not enforced)
+    pub fn with_pool(mut self, size: usize) -> Self {
+        self.pool_size = Some(size);
+        self
+    }
+
+    /// Configure strict mode (backward compatibility - currently not enforced)
+    pub fn strict_mode(mut self, enabled: bool) -> Self {
+        self.strict_mode = Some(enabled);
         self
     }
 }

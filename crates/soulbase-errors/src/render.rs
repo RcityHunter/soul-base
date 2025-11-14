@@ -24,6 +24,8 @@ pub struct AuditErrorView {
     pub severity: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message_dev: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub correlation_id: Option<String>,
     pub meta: Map<String, Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cause_chain: Option<Vec<CauseEntry>>,
@@ -46,6 +48,7 @@ impl ErrorObj {
             retryable: RetryClass::as_str(self.retryable),
             severity: Severity::as_str(self.severity),
             message_dev: self.message_dev.clone(),
+            correlation_id: self.correlation_id.clone(),
             meta: self.meta.clone(),
             cause_chain: self.cause_chain.clone(),
         }
