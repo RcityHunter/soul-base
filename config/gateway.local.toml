@@ -144,15 +144,20 @@ tags = ["demo"]
 input_schema = {}
 output_schema = {}
 scopes = []
+side_effect = "None"
+safety_class = "Low"
+idempotency = "None"
+concurrency = "Parallel"
+
 [[tools.manifests.capabilities]]
 domain = "tmp"
 action = "use"
 resource = "/tmp"
 attrs = {}
-side_effect = "None"
-safety_class = "Low"
+
 [tools.manifests.consent]
 required = false
+
 [tools.manifests.limits]
 timeout_ms = 1000
 max_bytes_in = 4096
@@ -160,9 +165,6 @@ max_bytes_out = 4096
 max_files = 0
 max_depth = 0
 max_concurrency = 1
-
-idempotency = "None"
-concurrency = "Parallel"
 
 [llm]
 default_complete_model = "local:echo"

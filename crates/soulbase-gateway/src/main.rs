@@ -60,7 +60,7 @@ use soulbase_storage::mock::{InMemoryRepository, MockDatastore};
 use soulbase_storage::model::{Entity, QueryParams};
 #[cfg(any(feature = "registry_surreal", feature = "idempo_surreal"))]
 use soulbase_storage::surreal::{SurrealConfig, SurrealDatastore};
-use soulbase_storage::{errors::StorageError, spi::repo::Repository, Datastore, QueryExecutor};
+use soulbase_storage::{errors::StorageError, spi::repo::Repository};
 #[cfg(feature = "registry_surreal")]
 use soulbase_tools::prelude::SurrealToolRegistry;
 use soulbase_tools::{
