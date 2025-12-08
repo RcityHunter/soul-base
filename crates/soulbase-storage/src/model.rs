@@ -74,7 +74,13 @@ pub struct MigrationVersion {
 }
 
 pub mod awareness;
+pub mod autonomous;
 pub mod causal;
+pub mod dfr;
+pub mod embedding;
+pub mod evolution;
+pub mod metacognition;
 pub mod recall;
+pub mod timeseries;
 pub mod timeline;
 pub mod vector_manifest;

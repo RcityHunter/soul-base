@@ -43,14 +43,21 @@ pub use mapper::SurrealMapper;
 pub use migrate::SurrealMigrator;
 #[cfg(feature = "surreal")]
 pub use repo::{
-    AwarenessEventRepo, CausalEdgeRepo, RecallChunkRepo, SurrealRepository, TimelineEventRepo,
-    VectorManifestRepo,
+    AcPerformanceProfileRepo, AutonomousSessionRepo, AwarenessEventRepo, CausalEdgeRepo,
+    DecisionAuditRepo, DfrDecisionRepo, DfrFingerprintRepo, EmbeddingChunkRepo,
+    EvolutionAiEventRepo, EvolutionGroupEventRepo, EvolutionRelationshipRepo,
+    MetacognitionAnalysisRepo, MetacognitionInsightRepo, RecallChunkRepo, SurrealRepository,
+    ThinkingPatternRepo, TimelineEventRepo, TimeseriesMetricRepo, VectorManifestRepo,
 };
 #[cfg(feature = "surreal")]
 pub use schema::{
-    core_migration, llm_migration, migrations as schema_migrations, TABLE_AWARENESS_EVENT,
-    TABLE_CAUSAL_EDGE, TABLE_LLM_EXPLAIN, TABLE_LLM_TOOL_PLAN, TABLE_RECALL_CHUNK,
-    TABLE_TIMELINE_EVENT, TABLE_VECTOR_MANIFEST,
+    ace_migration, core_migration, llm_migration, migrations as schema_migrations,
+    TABLE_AC_PERFORMANCE_PROFILE, TABLE_AUTONOMOUS_SESSION, TABLE_AWARENESS_EVENT,
+    TABLE_CAUSAL_EDGE, TABLE_DECISION_AUDIT, TABLE_DFR_DECISION, TABLE_DFR_FINGERPRINT,
+    TABLE_EMBEDDING_CHUNK, TABLE_EVOLUTION_AI, TABLE_EVOLUTION_GROUP_EVENT,
+    TABLE_EVOLUTION_RELATIONSHIP, TABLE_LLM_EXPLAIN, TABLE_LLM_TOOL_PLAN,
+    TABLE_METACOGNITION_ANALYSIS, TABLE_METACOGNITION_INSIGHT, TABLE_RECALL_CHUNK,
+    TABLE_THINKING_PATTERN, TABLE_TIMELINE_EVENT, TABLE_TIMESERIES_METRIC, TABLE_VECTOR_MANIFEST,
 };
 #[cfg(feature = "surreal")]
 pub use session::SurrealSession;

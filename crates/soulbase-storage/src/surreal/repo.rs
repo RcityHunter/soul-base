@@ -1,8 +1,21 @@
 use super::datastore::SurrealDatastore;
 use crate::errors::StorageError;
 use crate::model::{
-    awareness::AwarenessEvent, causal::CausalEdge, recall::RecallChunk, timeline::TimelineEvent,
-    vector_manifest::VectorManifest, Entity, Page, QueryParams,
+    awareness::AwarenessEvent,
+    autonomous::AutonomousSession,
+    causal::CausalEdge,
+    dfr::{DfrDecision, DfrFingerprint},
+    embedding::EmbeddingChunk,
+    evolution::{EvolutionAiEvent, EvolutionGroupEvent, EvolutionRelationship},
+    metacognition::{
+        AcPerformanceProfile, DecisionAudit, MetacognitionAnalysis, MetacognitionInsight,
+        ThinkingPattern,
+    },
+    recall::RecallChunk,
+    timeline::TimelineEvent,
+    timeseries::TimeseriesMetric,
+    vector_manifest::VectorManifest,
+    Entity, Page, QueryParams,
 };
 use crate::spi::datastore::Datastore;
 use crate::spi::query::{QueryExecutor, QueryStats};
@@ -206,6 +219,120 @@ impl<E: Entity> SurrealRepository<E> {
                 }
                 if has_field("plan_id") {
                     indices.push("idx_llm_explain_plan".into());
+                }
+            }
+            // ACE 新增表索引推断
+            crate::surreal::schema::TABLE_TIMESERIES_METRIC => {
+                if has_field("metric_id") {
+                    indices.push("uniq_timeseries_metric".into());
+                }
+                if has_field("name") {
+                    indices.push("idx_timeseries_name_time".into());
+                }
+                if has_field("session_id") {
+                    indices.push("idx_timeseries_session".into());
+                }
+            }
+            crate::surreal::schema::TABLE_EMBEDDING_CHUNK => {
+                if has_field("chunk_id") {
+                    indices.push("uniq_embedding_chunk".into());
+                }
+                if has_field("source_type") || has_field("source_id") {
+                    indices.push("idx_embedding_source".into());
+                }
+                if has_field("journey_id") {
+                    indices.push("idx_embedding_journey".into());
+                }
+            }
+            crate::surreal::schema::TABLE_EVOLUTION_GROUP_EVENT => {
+                if has_field("event_id") {
+                    indices.push("uniq_evolution_group".into());
+                }
+                if has_field("event_type") {
+                    indices.push("idx_evolution_group_type".into());
+                }
+            }
+            crate::surreal::schema::TABLE_EVOLUTION_AI => {
+                if has_field("record_id") {
+                    indices.push("uniq_evolution_ai".into());
+                }
+                if has_field("ai_id") {
+                    indices.push("idx_evolution_ai_id".into());
+                }
+            }
+            crate::surreal::schema::TABLE_EVOLUTION_RELATIONSHIP => {
+                if has_field("record_id") {
+                    indices.push("uniq_evolution_rel".into());
+                }
+                if has_field("source_id") {
+                    indices.push("idx_evolution_rel_source".into());
+                }
+                if has_field("target_id") {
+                    indices.push("idx_evolution_rel_target".into());
+                }
+            }
+            crate::surreal::schema::TABLE_METACOGNITION_ANALYSIS => {
+                if has_field("analysis_id") {
+                    indices.push("uniq_metacognition_analysis".into());
+                }
+                if has_field("mode") {
+                    indices.push("idx_metacognition_mode".into());
+                }
+            }
+            crate::surreal::schema::TABLE_METACOGNITION_INSIGHT => {
+                if has_field("insight_id") {
+                    indices.push("uniq_metacognition_insight".into());
+                }
+                if has_field("analysis_id") {
+                    indices.push("idx_metacognition_insight_analysis".into());
+                }
+            }
+            crate::surreal::schema::TABLE_THINKING_PATTERN => {
+                if has_field("pattern_id") {
+                    indices.push("uniq_thinking_pattern".into());
+                }
+                if has_field("pattern_type") {
+                    indices.push("idx_thinking_pattern_type".into());
+                }
+            }
+            crate::surreal::schema::TABLE_AC_PERFORMANCE_PROFILE => {
+                if has_field("ac_id") {
+                    indices.push("uniq_ac_performance".into());
+                }
+            }
+            crate::surreal::schema::TABLE_DECISION_AUDIT => {
+                if has_field("audit_id") {
+                    indices.push("uniq_decision_audit".into());
+                }
+                if has_field("decision_id") {
+                    indices.push("idx_decision_audit_decision".into());
+                }
+            }
+            crate::surreal::schema::TABLE_DFR_FINGERPRINT => {
+                if has_field("fingerprint_id") {
+                    indices.push("uniq_dfr_fingerprint".into());
+                }
+                if has_field("decision_type") {
+                    indices.push("idx_dfr_fingerprint_type".into());
+                }
+            }
+            crate::surreal::schema::TABLE_DFR_DECISION => {
+                if has_field("decision_id") {
+                    indices.push("uniq_dfr_decision".into());
+                }
+                if has_field("fingerprint_id") {
+                    indices.push("idx_dfr_decision_fingerprint".into());
+                }
+                if has_field("decision_type") {
+                    indices.push("idx_dfr_decision_type".into());
+                }
+            }
+            crate::surreal::schema::TABLE_AUTONOMOUS_SESSION => {
+                if has_field("session_id") {
+                    indices.push("uniq_autonomous_session".into());
+                }
+                if has_field("status") {
+                    indices.push("idx_autonomous_session_status".into());
                 }
             }
             _ => {}
@@ -495,3 +622,18 @@ pub type CausalEdgeRepo = SurrealRepository<CausalEdge>;
 pub type RecallChunkRepo = SurrealRepository<RecallChunk>;
 pub type AwarenessEventRepo = SurrealRepository<AwarenessEvent>;
 pub type VectorManifestRepo = SurrealRepository<VectorManifest>;
+
+// ACE 新增 Repository 类型别名
+pub type TimeseriesMetricRepo = SurrealRepository<TimeseriesMetric>;
+pub type EmbeddingChunkRepo = SurrealRepository<EmbeddingChunk>;
+pub type EvolutionGroupEventRepo = SurrealRepository<EvolutionGroupEvent>;
+pub type EvolutionAiEventRepo = SurrealRepository<EvolutionAiEvent>;
+pub type EvolutionRelationshipRepo = SurrealRepository<EvolutionRelationship>;
+pub type MetacognitionAnalysisRepo = SurrealRepository<MetacognitionAnalysis>;
+pub type MetacognitionInsightRepo = SurrealRepository<MetacognitionInsight>;
+pub type ThinkingPatternRepo = SurrealRepository<ThinkingPattern>;
+pub type AcPerformanceProfileRepo = SurrealRepository<AcPerformanceProfile>;
+pub type DecisionAuditRepo = SurrealRepository<DecisionAudit>;
+pub type DfrFingerprintRepo = SurrealRepository<DfrFingerprint>;
+pub type DfrDecisionRepo = SurrealRepository<DfrDecision>;
+pub type AutonomousSessionRepo = SurrealRepository<AutonomousSession>;
